@@ -1,0 +1,6 @@
+netmiko==4.3.0
+pandas==2.2.3
+openpyxl==3.1.5
+PyQt5==5.15.11
+cryptography==44.0.0
+paramiko==3.5.0
