@@ -1,0 +1,43 @@
+# Python 编译缓存
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# 虚拟环境
+.venv/
+venv/
+env/
+.env
+
+# Build outputs
+build/
+dist/
+*.build/
+*.dist/
+*.onefile-build/
+*.spec.bak
+
+# 日志文件
+logs/success/*.log
+logs/failure/*.log
+config/operation_templates.json
+
+# IDE 配置
+.idea/
+.vscode/
+*.iml
+
+# 操作系统
+Thumbs.db
+.DS_Store
+
+# 临时文件
+*.tmp
+*.bak
+*.swp
+~$*.xlsx
+dist/logs/
+dist/__pycache__/
+dist/**/*.log
+logs/
