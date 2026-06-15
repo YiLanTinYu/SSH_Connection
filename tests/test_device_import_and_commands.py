@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 
-import pandas as pd
+from openpyxl import Workbook
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -10,14 +10,24 @@ from config.device_config import DeviceConfigManager, DeviceInfo
 from config.device_commands import detect_brand, translate_command_for_brand
 
 
+def write_excel(path, rows):
+    workbook = Workbook()
+    sheet = workbook.active
+    headers = list(rows[0].keys())
+    sheet.append(headers)
+    for row in rows:
+        sheet.append([row.get(header) for header in headers])
+    workbook.save(path)
+
+
 def test_excel_import_rejects_blank_required_cells(tmp_path):
     path = tmp_path / "devices.xlsx"
-    pd.DataFrame([
+    write_excel(path, [
         {"ip": None, "username": "admin", "password": "pwd", "brand": "h3c", "port": 22},
         {"ip": "192.168.1.1", "username": None, "password": "pwd", "brand": "h3c", "port": 22},
         {"ip": "192.168.1.2", "username": "admin", "password": None, "brand": "h3c", "port": 22},
         {"ip": "192.168.1.3", "username": "admin", "password": "pwd", "brand": None, "port": None},
-    ]).to_excel(path, index=False)
+    ])
 
     mgr = DeviceConfigManager()
     ok, fail, errors = mgr.import_from_excel(str(path))
@@ -33,10 +43,10 @@ def test_excel_import_rejects_blank_required_cells(tmp_path):
 
 def test_excel_import_validates_ip_and_port(tmp_path):
     path = tmp_path / "bad_devices.xlsx"
-    pd.DataFrame([
+    write_excel(path, [
         {"ip": "999.1.1.1", "username": "admin", "password": "pwd", "brand": "h3c", "port": 22},
         {"ip": "192.168.1.1", "username": "admin", "password": "pwd", "brand": "h3c", "port": 70000},
-    ]).to_excel(path, index=False)
+    ])
 
     mgr = DeviceConfigManager()
     ok, fail, errors = mgr.import_from_excel(str(path))
@@ -49,11 +59,11 @@ def test_excel_import_validates_ip_and_port(tmp_path):
 
 def test_excel_import_skips_duplicate_ip_port(tmp_path):
     path = tmp_path / "duplicate_devices.xlsx"
-    pd.DataFrame([
+    write_excel(path, [
         {"ip": "192.168.1.1", "username": "admin", "password": "pwd", "brand": "h3c", "port": 22},
         {"ip": "192.168.1.1", "username": "admin2", "password": "pwd2", "brand": "huawei", "port": 22},
         {"ip": "192.168.1.1", "username": "admin3", "password": "pwd3", "brand": "h3c", "port": 2222},
-    ]).to_excel(path, index=False)
+    ])
 
     mgr = DeviceConfigManager()
     ok, fail, errors = mgr.import_from_excel(str(path))

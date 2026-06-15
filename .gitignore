@@ -13,6 +13,9 @@ env/
 # Build outputs
 build/
 dist/
+.nuitka-cache/
+dist_debug*/
+nuitka-crash-report.xml
 *.build/
 *.dist/
 *.onefile-build/
@@ -41,3 +44,4 @@ dist/logs/
 dist/__pycache__/
 dist/**/*.log
 logs/
+.pytest_cache/

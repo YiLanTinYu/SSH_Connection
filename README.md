@@ -19,7 +19,7 @@
 - Python 3.7+
 - PyQt5
 - paramiko
-- pandas / openpyxl
+- openpyxl
 - ThreadPoolExecutor
 - Nuitka
 

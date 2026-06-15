@@ -10,7 +10,7 @@ echo ================================================
 echo.
 
 cd /d "%~dp0"
-set NUITKA_CACHE_DIR=%CD%\build\nuitka-cache
+set NUITKA_CACHE_DIR=%CD%\.nuitka-cache
 
 echo [1/5] Checking Python ...
 python --version >nul 2>&1
@@ -65,13 +65,25 @@ mkdir dist >nul 2>&1
 set ICON_ARGS=
 if exist "app.ico" set ICON_ARGS=--windows-icon-from-ico=app.ico
 
+set CONSOLE_MODE=disable
+if /i "%~1"=="debug" set CONSOLE_MODE=force
+if /i "%DEBUG%"=="1" set CONSOLE_MODE=force
+echo   Console mode: %CONSOLE_MODE%
+
 python -m nuitka ^
     --standalone ^
     --onefile ^
     --assume-yes-for-downloads ^
     --mingw64 ^
+    --lto=no ^
+    --jobs=8 ^
     --enable-plugins=pyqt5 ^
-    --windows-console-mode=disable ^
+    --windows-console-mode=%CONSOLE_MODE% ^
+    --nofollow-import-to=tests ^
+    --nofollow-import-to=Kylin ^
+    --nofollow-import-to=matplotlib ^
+    --nofollow-import-to=pytest ^
+    --nofollow-import-to=pandas ^
     %ICON_ARGS% ^
     --include-data-files=SSH_command.txt=SSH_command.txt ^
     --include-data-files=device_template.xlsx=device_template.xlsx ^

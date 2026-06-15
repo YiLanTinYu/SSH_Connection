@@ -6,11 +6,11 @@
 支持IPv4和IPv6地址
 """
 
-import pandas as pd
 from typing import List, Dict, Optional
 import os
 import json
 import sys
+from openpyxl import Workbook, load_workbook
 
 # 添加项目路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -151,7 +151,7 @@ class DeviceConfigManager:
     @staticmethod
     def _clean_excel_value(value, default: str = '') -> str:
         """Return a safe string for Excel cells, treating NaN/blank as default."""
-        if pd.isna(value):
+        if value is None:
             return default
         value = str(value).strip()
         if value.lower() in ('nan', 'none'):
@@ -161,7 +161,7 @@ class DeviceConfigManager:
     @staticmethod
     def _clean_excel_port(value, default: int = 22) -> int:
         """Normalize an Excel port cell and validate the TCP port range."""
-        if pd.isna(value) or str(value).strip() == '':
+        if value is None or str(value).strip() == '':
             return default
         try:
             port = int(float(value))
@@ -180,16 +180,30 @@ class DeviceConfigManager:
         self.last_import_skipped = []
         
         try:
-            df = pd.read_excel(file_path)
+            workbook = load_workbook(file_path, read_only=True, data_only=True)
+            sheet = workbook.active
+            rows = list(sheet.iter_rows(values_only=True))
+            if not rows:
+                errors.append("Excel file is empty")
+                return 0, 0, errors
+
+            headers = [self._clean_excel_value(value).lower() for value in rows[0]]
+            data_rows = rows[1:]
             required_columns = ['ip', 'username', 'password']
-            missing_columns = [col for col in required_columns if col not in df.columns]
+            missing_columns = [col for col in required_columns if col not in headers]
             
             if missing_columns:
                 errors.append(f"Excel file missing required columns: {missing_columns}")
-                return 0, len(df), errors
+                return 0, len(data_rows), errors
+
+            header_index = {name: index for index, name in enumerate(headers) if name}
             
-            for index, row in df.iterrows():
+            for index, values in enumerate(data_rows):
                 row_no = index + 2
+                row = {
+                    name: values[col_index] if col_index < len(values) else None
+                    for name, col_index in header_index.items()
+                }
                 try:
                     brand = self._clean_excel_value(row.get('brand'), 'h3c').lower()
                     ip = self._clean_excel_value(row.get('ip'))
@@ -236,9 +250,14 @@ class DeviceConfigManager:
             bool: 是否成功
         """
         try:
-            data = [device.to_dict() for device in self.devices]
-            df = pd.DataFrame(data)
-            df.to_excel(file_path, index=False)
+            workbook = Workbook()
+            sheet = workbook.active
+            headers = ['name', 'brand', 'ip', 'port', 'username', 'password', 'ip_version', 'ip_version_name']
+            sheet.append(headers)
+            for device in self.devices:
+                data = device.to_dict()
+                sheet.append([data.get(header, '') for header in headers])
+            workbook.save(file_path)
             return True
         except Exception as e:
             print(f"导出失败: {str(e)}")
@@ -287,16 +306,13 @@ class DeviceConfigManager:
     def create_template_excel(self, file_path: str) -> bool:
         """创建设备信息模板Excel"""
         try:
-            template_data = {
-                'name': ['设备1', '设备2'],
-                'brand': ['h3c', 'huawei'],
-                'ip': ['192.168.1.1', '192.168.1.2'],
-                'port': [22, 22],
-                'username': ['admin', 'admin'],
-                'password': ['password1', 'password2'],
-            }
-            df = pd.DataFrame(template_data)
-            df.to_excel(file_path, index=False)
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "devices"
+            sheet.append(['name', 'brand', 'ip', 'port', 'username', 'password'])
+            sheet.append(['设备1', 'h3c', '192.168.1.1', 22, 'admin', 'password1'])
+            sheet.append(['设备2', 'huawei', '192.168.1.2', 22, 'admin', 'password2'])
+            workbook.save(file_path)
             return True
         except Exception as e:
             print(f"创建模板失败: {str(e)}")

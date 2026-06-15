@@ -38,50 +38,50 @@ from utils.ipv6_utils import IPv6Utils, IPv6AddressValidator
 
 # ─────────────────────── 主题配色 ───────────────────────
 class Theme:
-    """现代深色/浅色主题配色方案"""
+    """TailAdmin-inspired light dashboard theme."""
     # 主色
-    PRIMARY        = "#1565C0"   # 深蓝
-    PRIMARY_LIGHT  = "#1E88E5"   # 亮蓝
-    PRIMARY_DARK   = "#0D47A1"   # 更深蓝
-    ACCENT         = "#00BCD4"   # 青色强调
+    PRIMARY        = "#465FFF"
+    PRIMARY_LIGHT  = "#ECF3FF"
+    PRIMARY_DARK   = "#3446CC"
+    ACCENT         = "#12B76A"
     
     # 背景
-    BG_MAIN        = "#F0F4F8"   # 主背景（浅灰蓝）
+    BG_MAIN        = "#F9FAFB"
     BG_PANEL       = "#FFFFFF"   # 面板背景
-    BG_CARD        = "#FAFAFA"   # 卡片背景
-    BG_HEADER      = "#1565C0"   # 表头背景
+    BG_CARD        = "#F9FAFB"
+    BG_HEADER      = "#F9FAFB"
     BG_INPUT       = "#FFFFFF"
     
     # 文字
-    TEXT_PRIMARY   = "#1A202C"   # 主文字
-    TEXT_SECONDARY = "#4A5568"   # 次要文字
-    TEXT_HINT      = "#A0AEC0"   # 提示文字
+    TEXT_PRIMARY   = "#101828"
+    TEXT_SECONDARY = "#475467"
+    TEXT_HINT      = "#98A2B3"
     TEXT_WHITE     = "#FFFFFF"
-    TEXT_HEADER    = "#FFFFFF"   # 表头文字
+    TEXT_HEADER    = "#475467"
     
     # 状态
-    SUCCESS        = "#2E7D32"
-    SUCCESS_BG     = "#E8F5E9"
-    WARNING        = "#F57F17"
-    WARNING_BG     = "#FFFDE7"
-    ERROR          = "#C62828"
-    ERROR_BG       = "#FFEBEE"
-    INFO           = "#1565C0"
-    INFO_BG        = "#E3F2FD"
+    SUCCESS        = "#12B76A"
+    SUCCESS_BG     = "#ECFDF3"
+    WARNING        = "#F79009"
+    WARNING_BG     = "#FFFAEB"
+    ERROR          = "#F04438"
+    ERROR_BG       = "#FEF3F2"
+    INFO           = "#465FFF"
+    INFO_BG        = "#ECF3FF"
     
     # 边框
-    BORDER         = "#E2E8F0"
-    BORDER_FOCUS   = "#1E88E5"
+    BORDER         = "#EAECF0"
+    BORDER_FOCUS   = "#465FFF"
     
     # 按钮
-    BTN_PRIMARY    = "#1565C0"
-    BTN_PRIMARY_H  = "#1E88E5"
-    BTN_SUCCESS    = "#2E7D32"
-    BTN_SUCCESS_H  = "#388E3C"
-    BTN_DANGER     = "#C62828"
-    BTN_DANGER_H   = "#D32F2F"
-    BTN_NEUTRAL    = "#546E7A"
-    BTN_NEUTRAL_H  = "#607D8B"
+    BTN_PRIMARY    = "#465FFF"
+    BTN_PRIMARY_H  = "#3446CC"
+    BTN_SUCCESS    = "#12B76A"
+    BTN_SUCCESS_H  = "#039855"
+    BTN_DANGER     = "#F04438"
+    BTN_DANGER_H   = "#D92D20"
+    BTN_NEUTRAL    = "#667085"
+    BTN_NEUTRAL_H  = "#475467"
     
     # 阴影/分割
     SHADOW         = "rgba(0,0,0,0.08)"
@@ -92,9 +92,9 @@ class Theme:
     PROGRESS_CHUNK = "#1E88E5"
 
     # 表格行
-    ROW_ALT        = "#F7F9FC"
-    ROW_HOVER      = "#EBF4FF"
-    ROW_SELECT     = "#BBDEFB"
+    ROW_ALT        = "#FCFCFD"
+    ROW_HOVER      = "#F2F4F7"
+    ROW_SELECT     = "#ECF3FF"
 
 
 def make_icon(color: str, shape: str = "circle") -> QIcon:
@@ -154,8 +154,8 @@ QGroupBox {{
     background-color: {Theme.BG_PANEL};
     border: 1px solid {Theme.BORDER};
     border-radius: 8px;
-    margin-top: 12px;
-    padding: 10px 8px 8px 8px;
+    margin-top: 14px;
+    padding: 12px 10px 10px 10px;
     font-size: 13px;
     font-weight: 600;
     color: {Theme.TEXT_PRIMARY};
@@ -163,9 +163,9 @@ QGroupBox {{
 QGroupBox::title {{
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    padding: 0 6px;
+    padding: 0 8px;
     left: 12px;
-    color: {Theme.PRIMARY};
+    color: {Theme.TEXT_PRIMARY};
     font-size: 13px;
     font-weight: 700;
 }}
@@ -173,16 +173,16 @@ QGroupBox::title {{
 /* 输入框 */
 QLineEdit, QSpinBox, QComboBox {{
     background-color: {Theme.BG_INPUT};
-    border: 1.5px solid {Theme.BORDER};
-    border-radius: 5px;
-    padding: 4px 8px;
+    border: 1px solid #D0D5DD;
+    border-radius: 8px;
+    padding: 6px 10px;
     font-size: 13px;
     color: {Theme.TEXT_PRIMARY};
-    min-height: 26px;
+    min-height: 28px;
 }}
 QLineEdit:focus, QSpinBox:focus, QComboBox:focus {{
     border-color: {Theme.BORDER_FOCUS};
-    background-color: #EBF4FF;
+    background-color: #FFFFFF;
 }}
 QLineEdit::placeholder {{
     color: {Theme.TEXT_HINT};
@@ -211,16 +211,16 @@ QSpinBox::up-button, QSpinBox::down-button {{
 /* 通用按钮基类 */
 QPushButton {{
     border: none;
-    border-radius: 5px;
-    padding: 6px 12px;
+    border-radius: 8px;
+    padding: 7px 14px;
     font-size: 13px;
     font-weight: 600;
-    min-height: 28px;
+    min-height: 30px;
     cursor: pointer;
 }}
 QPushButton:disabled {{
-    background-color: #CFD8DC;
-    color: #90A4AE;
+    background-color: #EAECF0;
+    color: #98A2B3;
 }}
 
 /* 主操作按钮 */
@@ -240,9 +240,9 @@ QPushButton#btn_success {{
     background-color: {Theme.BTN_SUCCESS};
     color: white;
     font-size: 13px;
-    min-height: 34px;
-    border-radius: 6px;
-    letter-spacing: 1px;
+    min-height: 36px;
+    border-radius: 8px;
+    letter-spacing: 0px;
 }}
 QPushButton#btn_success:hover {{
     background-color: {Theme.BTN_SUCCESS_H};
@@ -271,9 +271,9 @@ QPushButton#btn_neutral:hover {{
 
 /* 轮廓按钮 */
 QPushButton#btn_outline {{
-    background-color: transparent;
+    background-color: #FFFFFF;
     color: {Theme.PRIMARY};
-    border: 1.5px solid {Theme.PRIMARY};
+    border: 1px solid {Theme.PRIMARY};
 }}
 QPushButton#btn_outline:hover {{
     background-color: {Theme.INFO_BG};
@@ -292,8 +292,8 @@ QTableWidget {{
     outline: none;
 }}
 QTableWidget::item {{
-    padding: 4px 8px;
-    border: none;
+    padding: 7px 10px;
+    border-bottom: 1px solid {Theme.BORDER};
 }}
 QTableWidget::item:hover {{
     background-color: {Theme.ROW_HOVER};
@@ -303,9 +303,10 @@ QHeaderView::section {{
     color: {Theme.TEXT_HEADER};
     font-weight: 700;
     font-size: 13px;
-    padding: 6px 8px;
+    padding: 8px 10px;
     border: none;
-    border-right: 1px solid rgba(255,255,255,0.15);
+    border-bottom: 1px solid {Theme.BORDER};
+    border-right: 1px solid {Theme.BORDER};
 }}
 QHeaderView::section:first {{
     border-top-left-radius: 8px;
@@ -319,7 +320,7 @@ QHeaderView::section:last {{
 QTextEdit {{
     background-color: #0D1117;
     color: #C9D1D9;
-    border: 1px solid {Theme.BORDER};
+    border: 1px solid #1F2937;
     border-radius: 8px;
     font-family: "Consolas", "Courier New", monospace;
     font-size: 12px;
@@ -345,7 +346,7 @@ QProgressBar::chunk {{
 
 /* 状态栏 */
 QStatusBar {{
-    background-color: {Theme.PRIMARY_DARK};
+    background-color: #101828;
     color: rgba(255,255,255,0.85);
     font-size: 12px;
     padding: 2px 8px;
@@ -356,7 +357,7 @@ QStatusBar::item {{
 
 /* 标签 */
 QLabel#section_title {{
-    color: {Theme.PRIMARY};
+    color: {Theme.TEXT_PRIMARY};
     font-size: 13px;
     font-weight: 700;
 }}
@@ -380,12 +381,12 @@ QScrollBar:vertical {{
     border-radius: 4px;
 }}
 QScrollBar::handle:vertical {{
-    background: #B0BEC5;
+    background: #D0D5DD;
     border-radius: 4px;
     min-height: 30px;
 }}
 QScrollBar::handle:vertical:hover {{
-    background: #78909C;
+    background: #98A2B3;
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0;
@@ -396,12 +397,12 @@ QScrollBar:horizontal {{
     border-radius: 4px;
 }}
 QScrollBar::handle:horizontal {{
-    background: #B0BEC5;
+    background: #D0D5DD;
     border-radius: 4px;
     min-width: 30px;
 }}
 QScrollBar::handle:horizontal:hover {{
-    background: #78909C;
+    background: #98A2B3;
 }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
     width: 0;
@@ -413,7 +414,27 @@ QSplitter::handle {{
     width: 4px;
 }}
 QSplitter::handle:hover {{
-    background-color: {Theme.ACCENT};
+    background-color: {Theme.PRIMARY};
+}}
+
+QListWidget {{
+    background-color: {Theme.BG_CARD};
+    border: 1px solid {Theme.BORDER};
+    border-radius: 8px;
+    padding: 4px;
+    outline: none;
+}}
+QListWidget::item {{
+    padding: 8px 10px;
+    border-radius: 6px;
+    color: {Theme.TEXT_PRIMARY};
+}}
+QListWidget::item:hover {{
+    background-color: {Theme.ROW_HOVER};
+}}
+QListWidget::item:selected {{
+    background-color: {Theme.ROW_SELECT};
+    color: {Theme.PRIMARY};
 }}
 
 /* MessageBox */
@@ -464,8 +485,8 @@ class StatusBadge(QLabel):
         if "✘" in text or "失败" in text or "错误" in text:
             color, bg = Theme.ERROR, Theme.ERROR_BG
         self.setStyleSheet(
-            f"color: {color}; background-color: {bg}; border-radius: 4px;"
-            f"padding: 3px 10px; font-size: 16px; font-weight: 600;"
+            f"color: {color}; background-color: {bg}; border-radius: 8px;"
+            f"padding: 4px 10px; font-size: 15px; font-weight: 600;"
         )
 
 
@@ -687,12 +708,12 @@ class MainWindow(QMainWindow):
             self.log_text.setFont(QFont("Consolas", 16))
         if hasattr(self, '_title_lbl'):
             self._title_lbl.setStyleSheet(
-                f"color: white; font-size: {pt + 10}px; font-weight: 700; "
-                "letter-spacing: 1px; background: transparent;"
+                f"color: {Theme.TEXT_PRIMARY}; font-size: {pt + 10}px; font-weight: 700; "
+                "letter-spacing: 0px; background: transparent;"
             )
         if hasattr(self, '_ver_lbl'):
             self._ver_lbl.setStyleSheet(
-                f"color: rgba(255,255,255,0.6); font-size: {pt + 2}px; background: transparent;"
+                f"color: {Theme.TEXT_HINT}; font-size: {pt + 2}px; background: transparent;"
             )
         if hasattr(self, 'cmd_file_label'):
             self.cmd_file_label.setStyleSheet(
@@ -898,12 +919,11 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(body)
 
     def _build_header(self) -> QWidget:
-        """顶部渐变标题栏"""
+        """TailAdmin 风格顶部栏"""
         header = QWidget()
-        header.setFixedHeight(76)
+        header.setFixedHeight(68)
         header.setStyleSheet(
-            f"background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-            f"stop:0 {Theme.PRIMARY_DARK}, stop:1 {Theme.ACCENT});"
+            f"background: {Theme.BG_PANEL}; border-bottom: 1px solid {Theme.BORDER};"
         )
         hl = QHBoxLayout(header)
         hl.setContentsMargins(20, 0, 20, 0)
@@ -919,8 +939,8 @@ class MainWindow(QMainWindow):
         # 标题
         self._title_lbl = QLabel("交换机自动化运维工具")
         self._title_lbl.setStyleSheet(
-            "color: white; font-size: 24px; font-weight: 700; "
-            "letter-spacing: 1px; background: transparent;"
+            f"color: {Theme.TEXT_PRIMARY}; font-size: 24px; font-weight: 700; "
+            "letter-spacing: 0px; background: transparent;"
         )
         hl.addWidget(self._title_lbl)
         hl.addStretch()
@@ -928,7 +948,7 @@ class MainWindow(QMainWindow):
         # 版本号
         self._ver_lbl = QLabel("by YiLanTinYu")
         self._ver_lbl.setStyleSheet(
-            "color: rgba(255,255,255,0.6); font-size: 16px; background: transparent;"
+            f"color: {Theme.TEXT_HINT}; font-size: 16px; background: transparent;"
         )
         hl.addWidget(self._ver_lbl)
         return header
