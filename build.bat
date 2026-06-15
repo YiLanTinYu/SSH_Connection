@@ -85,6 +85,7 @@ python -m nuitka ^
     --nofollow-import-to=pytest ^
     --nofollow-import-to=pandas ^
     %ICON_ARGS% ^
+    --include-data-files=app.ico=app.ico ^
     --include-data-files=SSH_command.txt=SSH_command.txt ^
     --include-data-files=device_template.xlsx=device_template.xlsx ^
     --output-dir=dist ^

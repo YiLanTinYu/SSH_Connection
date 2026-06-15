@@ -114,6 +114,23 @@ def make_icon(color: str, shape: str = "circle") -> QIcon:
 
 
 def build_app_icon() -> QIcon:
+    candidates = []
+    if getattr(sys, "frozen", False):
+        candidates.append(os.path.join(os.path.dirname(sys.executable), "app.ico"))
+    if hasattr(sys, "_MEIPASS"):
+        candidates.append(os.path.join(sys._MEIPASS, "app.ico"))
+
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates.extend([
+        os.path.join(project_root, "app.ico"),
+        os.path.join(os.getcwd(), "app.ico"),
+    ])
+
+    for icon_path in candidates:
+        if os.path.exists(icon_path):
+            icon = QIcon(icon_path)
+            if not icon.isNull():
+                return icon
     """构建应用程序图标（网络/交换机样式）"""
     pix = QPixmap(64, 64)
     pix.fill(Qt.transparent)

@@ -298,28 +298,16 @@ def create_icon() -> None:
     except ImportError as exc:
         raise SystemExit("Pillow is required. Run: python -m pip install Pillow") from exc
 
-    for variant in (1, 2, 3, 4):
-        images = [_make_icon(size, variant) for size in SIZES]
-        preview_path = ROOT / f"app_icon_option_{variant}.png"
-        ico_path = ROOT / f"app_icon_option_{variant}.ico"
-        images[-1].save(preview_path)
-        images[0].save(
-            ico_path,
-            format="ICO",
-            sizes=[(size, size) for size in SIZES],
-            append_images=images[1:],
-        )
-        if variant == SELECTED_VARIANT:
-            images[-1].save(PREVIEW_PATH)
-            images[0].save(
-                ICO_PATH,
-                format="ICO",
-                sizes=[(size, size) for size in SIZES],
-                append_images=images[1:],
-            )
+    images = [_make_icon(size, SELECTED_VARIANT) for size in SIZES]
+    images[-1].save(PREVIEW_PATH)
+    images[0].save(
+        ICO_PATH,
+        format="ICO",
+        sizes=[(size, size) for size in SIZES],
+        append_images=images[1:],
+    )
     print(f"[OK] Icon generated: {ICO_PATH}")
     print(f"[OK] Preview generated: {PREVIEW_PATH}")
-    print("[OK] Options generated: app_icon_option_1/2/3.png")
 
 
 if __name__ == "__main__":
