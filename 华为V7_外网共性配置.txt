@@ -1,0 +1,47 @@
+lldp enable
+#
+vlan batch 10 20 100
+#
+stp enable
+#
+acl number 3000
+ rule 0 deny tcp destination-port eq 135
+ rule 5 deny udp destination-port eq 135
+ rule 10 deny tcp destination-port eq 137
+ rule 15 deny udp destination-port eq 137
+ rule 20 deny tcp destination-port eq 138
+ rule 25 deny udp destination-port eq 138
+ rule 30 deny tcp destination-port eq 139
+ rule 35 deny udp destination-port eq 139
+ rule 40 deny tcp destination-port eq 445
+ rule 45 deny udp destination-port eq 445
+ rule 50 deny tcp destination-port eq 3389
+ rule 55 deny udp destination-port eq 3389
+#
+traffic classifier 3000 operator and
+ if-match acl 3000
+#
+traffic behavior 3000
+ deny
+#
+traffic policy 3000
+ classifier 3000 behavior 3000
+#
+traffic-policy 3000 global inbound
+traffic-policy 3000 global outbound
+#
+ip route-static 0.0.0.0 0.0.0.0 11.168.152.62
+ipv6 route-static :: 0 2405:6F00:E034:E30:11:168:152:62
+ipv6 route-static :: 0 2405:6F00:E034:E30:11:168:152:1
+#
+info-center loghost 11.168.152.61
+info-center loghost ipv6 2405:6F00:E034:E30:11:168:152:61
+#
+ntp-service unicast-server 11.168.152.110
+#
+snmp-agent
+snmp-agent sys-info version v3
+snmp-agent mib-view included sjw-mib iso
+snmp-agent mib-view included sjw-mib internet
+snmp-agent group v3 jxsjw privacy read-view sjw-mib
+#

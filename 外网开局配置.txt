@@ -1,0 +1,66 @@
+undo password-control aging enable 
+undo password-control length enable 
+undo password-control composition enable 
+undo password-control history enable 
+undo password-control complexity user-name check
+#
+radius scheme system
+ user-name-format without-domain
+#
+domain system
+#
+ domain default enable system
+#
+user-group system
+#
+local-user jxsbd class manage
+ password hash $h$6$WaiO3wD0lM+uUlml$uCwoE1RP7R+oj7D/vTR1XYvvjj9YXGiY+R44wscR9BJbavYgXBUj0hU08HZymY/J5J5ueXKkzvDPez1j0T9y0A==
+ service-type ssh terminal
+ authorization-attribute user-role level-15
+ authorization-attribute user-role network-admin
+ authorization-attribute user-role network-operator
+#
+public-key local create rsa
+public-key local create dsa
+#
+ssh server enable
+ssh server port 10022
+ssh user jxsbd service-type stelnet authentication-type password
+#
+line class aux
+ user-role network-admin
+#
+line class vty
+ user-role network-operator
+#
+line aux 0
+ authentication-mode scheme
+ user-role level-15
+ user-role network-admin
+#
+line vty 0 4
+ authentication-mode scheme
+ user-role level-15
+ user-role network-admin
+ user-role network-operator
+#
+line vty 5 15
+ user-role network-operator
+ idle-timeout 5 0
+#
+line vty 16 63
+ user-role network-operator
+#
+acl basic 2000
+ rule 0 permit source 11.168.152.110 0
+ rule 5 permit source 11.168.152.109 0
+ rule 100 deny
+#
+acl ipv6 number 2000
+ rule 5 permit source 2405:6F00:E034:E39:11:168:152:110/128
+ rule 15 permit source 2405:6F00:E034:E39:11:168:152:109/128
+ rule 100 deny 
+#
+ssh server acl 2000
+ssh server ipv6 acl ipv6 2000
+#

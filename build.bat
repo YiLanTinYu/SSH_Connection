@@ -70,9 +70,24 @@ if /i "%~1"=="debug" set CONSOLE_MODE=force
 if /i "%DEBUG%"=="1" set CONSOLE_MODE=force
 echo   Console mode: %CONSOLE_MODE%
 
+set ONEFILE_ARGS=
+set OUTPUT_EXE=dist\main.dist\H3C_SSH_Tool.exe
+set BUILD_MODE=folder
+if /i "%~1"=="onefile" (
+    set ONEFILE_ARGS=--onefile
+    set OUTPUT_EXE=dist\H3C_SSH_Tool.exe
+    set BUILD_MODE=onefile
+)
+if /i "%~2"=="onefile" (
+    set ONEFILE_ARGS=--onefile
+    set OUTPUT_EXE=dist\H3C_SSH_Tool.exe
+    set BUILD_MODE=onefile
+)
+echo   Build mode  : %BUILD_MODE%
+
 python -m nuitka ^
     --standalone ^
-    --onefile ^
+    %ONEFILE_ARGS% ^
     --assume-yes-for-downloads ^
     --mingw64 ^
     --lto=no ^
@@ -93,18 +108,23 @@ python -m nuitka ^
     main.py
 
 echo.
-if exist "dist\H3C_SSH_Tool.exe" (
+if exist "%OUTPUT_EXE%" (
     echo ================================================
     echo   Build SUCCESS!
     echo ================================================
     echo.
-    for %%f in ("dist\H3C_SSH_Tool.exe") do (
+    for %%f in ("%OUTPUT_EXE%") do (
         set /a SIZE_MB=%%~zf / 1048576
-        echo   Output : dist\H3C_SSH_Tool.exe
+        echo   Output : %%~ff
         echo   Size   : !SIZE_MB! MB
     )
     echo.
-    echo   This EXE runs standalone without Python.
+    if /i "%BUILD_MODE%"=="folder" (
+        echo   Folder build is recommended to reduce antivirus false positives.
+        echo   Keep the whole dist\main.dist folder together when copying.
+    ) else (
+        echo   Onefile build may trigger antivirus false positives on some systems.
+    )
     echo.
     set /p OPEN_DIR="Open output folder? (Y/N): "
     if /i "!OPEN_DIR!"=="Y" explorer dist

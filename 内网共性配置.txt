@@ -1,0 +1,82 @@
+irf mac-address persistent timer
+irf auto-update enable
+undo irf link-delay
+irf member 1 priority 1
+#
+mac-address mac-roaming enable
+#
+lldp global enable
+#
+password-recovery enable
+#
+vlan 1
+#
+vlan 10
+#
+vlan 20
+#
+vlan 30
+#              
+vlan 40
+#
+vlan 50
+#
+vlan 60
+#
+vlan 100
+#
+stp port-log instance 0 to 4094 
+stp port-log vlan 1 to 4094 
+stp global enable
+#
+acl advanced 3001
+ description undo_port_135/137/138/139/445/3389
+ rule 0 deny tcp destination-port eq 135
+ rule 5 deny udp destination-port eq 135
+ rule 10 deny tcp destination-port eq 137
+ rule 15 deny udp destination-port eq netbios-ns
+ rule 20 deny tcp destination-port eq 138
+ rule 25 deny udp destination-port eq netbios-dgm
+ rule 30 deny tcp destination-port eq 139
+ rule 35 deny udp destination-port eq netbios-ssn
+ rule 40 deny tcp destination-port eq 445
+ rule 45 deny udp destination-port eq 445
+ rule 50 deny tcp destination-port eq 3389
+ rule 55 deny udp destination-port eq 3389
+#
+traffic classifier 3001 operator and
+ if-match acl 3001
+#
+traffic behavior 3001
+ filter deny
+#
+qos policy 3001
+ classifier 3001 behavior 3001
+#
+qos apply policy 3001 global inbound 
+qos apply policy 3001 global outbound 
+#
+scheduler logfile size 16
+#
+ip route-static 0.0.0.0 0 22.61.220.62
+ipv6 route-static :: 0 2026::22:61:220:1
+#
+info-center loghost 22.61.220.61
+#
+arp ip-conflict log prompt
+arp user-ip-conflict record enable
+#
+ntp-service enable
+ntp-service unicast-server 11.61.249.11
+ntp-service unicast-server 11.61.249.12
+ntp-service unicast-server 22.61.223.12
+#
+snmp-agent
+snmp-agent local-engineid 800063A28094A7486B724600000001
+snmp-agent sys-info version v3 
+snmp-agent group v3 jxsjw privacy read-view sjw-mib
+snmp-agent target-host trap address udp-domain 22.61.220.60 params securityname jxsjw
+snmp-agent mib-view included sjw-mib iso 
+snmp-agent mib-view included sjw-mib internet 
+snmp-agent usm-user v3 JXSBD jxsjw cipher authentication-mode sha $c$3$gsxYAHHfo1HZnBIZm9p6SjMUEZSC2hHLdGjfG+3aDKg1XE4yDqc= privacy-mode aes128 $c$3$O/mytRAtPX9NmulgOhoDPsXVSh1uLTMxBwMQEyI2R8yX+A==
+#

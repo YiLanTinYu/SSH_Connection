@@ -1,0 +1,31 @@
+aaa
+ local-user jxsbd service-type ssh terminal
+ local-user jxsbd privilege level 15
+#
+rsa local-key-pair create
+#
+stelnet server enable
+ssh server port 10022
+ssh user jxsbd authentication-type password
+ssh user jxsbd service-type stelnet
+#
+user-interface con 0
+ authentication-mode aaa
+ user privilege level 15
+#
+user-interface vty 0 4
+ authentication-mode aaa
+ user privilege level 15
+ protocol inbound ssh
+#
+user-interface vty 5 15
+ protocol inbound ssh
+ idle-timeout 5 0
+#
+acl number 2000
+ rule 0 permit source 11.168.152.110 0
+ rule 5 permit source 11.168.152.109 0
+ rule 100 deny
+#
+ssh server acl 2000
+#

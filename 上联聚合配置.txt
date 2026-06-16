@@ -1,0 +1,6 @@
+interface Bridge-Aggregation1
+ port link-type trunk
+ undo port trunk permit vlan 1
+ port trunk permit vlan 2 to 4094
+ link-aggregation mode dynamic
+#

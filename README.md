@@ -247,13 +247,26 @@ Windows 下可使用 Nuitka 打包为独立 EXE。
 build.bat
 ```
 
+默认生成目录版，输出文件为：
+
+```text
+dist\main.dist\H3C_SSH_Tool.exe
+```
+
+如确需单文件版，可使用：
+
+```bat
+build.bat onefile
+```
+
 手动方式：
 
 ```bat
 python -m pip install -r requirements.txt
-python -m nuitka --standalone --onefile --assume-yes-for-downloads --mingw64 --enable-plugins=pyqt5 ^
+python -m nuitka --standalone --assume-yes-for-downloads --mingw64 --enable-plugins=pyqt5 ^
   --windows-console-mode=disable ^
   --windows-icon-from-ico=app.ico ^
+  --include-data-files=app.ico=app.ico ^
   --include-data-files=SSH_command.txt=SSH_command.txt ^
   --include-data-files=device_template.xlsx=device_template.xlsx ^
   --output-dir=dist ^
@@ -264,7 +277,7 @@ python -m nuitka --standalone --onefile --assume-yes-for-downloads --mingw64 --e
 打包输出目录：
 
 ```text
-dist/
+dist/main.dist/
 ```
 
 ## 项目结构
