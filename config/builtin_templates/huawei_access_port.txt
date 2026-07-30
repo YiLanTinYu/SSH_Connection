@@ -1,0 +1,10 @@
+# Huawei VRP V200：Access 端口
+system-view
+vlan batch {{ACCESS_VLAN}}
+interface {{INTERFACE}}
+description {{DESCRIPTION}}
+port link-type access
+port default vlan {{ACCESS_VLAN}}
+undo shutdown
+quit
+return

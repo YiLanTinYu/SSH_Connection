@@ -350,78 +350,19 @@ PROMPT_REGEX = re.compile(
 
 ---
 
-## 七、命令翻译机制：`translate_command_for_brand()`
+## 七、用户业务命令执行策略
 
-### 7.1 解决什么问题？
+### 7.1 当前策略
 
-用户在 `SSH_command.txt` 里写了一份命令列表（H3C 格式）：
-```
-display interface brief
-display vlan
-display arp
-```
+用户业务脚本不会根据识别到的品牌自动翻译。程序读取脚本后，会过滤空行和注释，并把剩余命令逐行原样发送到设备。
 
-如果要连接 Cisco 设备，这些命令全部无效。过去的做法是准备多份文件，
-工具改进后，运行时自动翻译：
+取消自动转换的原因：
 
-```
-display interface brief  →  show ip interface brief  （Cisco）
-display vlan             →  show vlan brief           （Cisco）
-display arp              →  show arp                  （Cisco，碰巧相同）
-```
+- 不同品牌、型号和系统版本之间不存在始终可靠的一一对应关系。
+- 未经过真实设备覆盖测试的映射可能产生误导。
+- 配置命令一旦被错误改写，风险高于查询命令执行失败。
 
-### 7.2 翻译原理：构建反向查找表
-
-```python
-# config/device_commands.py  第 233-269 行
-
-def translate_command_for_brand(command: str, brand: str) -> str:
-
-    brand_cmds = get_device_commands(brand)   # 取目标品牌的命令字典
-
-    # ── 第一步：建立"命令字符串 → 命令键"的反向映射 ──
-    # 正向映射（原始数据）：命令键 → 命令字符串
-    #   'display_interface': 'display interface brief'   (H3C)
-    #   'display_interface': 'show ip interface brief'   (Cisco)
-    #
-    # 反向映射（我们构建的）：命令字符串 → 命令键
-    #   'display interface brief' → 'display_interface'
-    #   'show ip interface brief' → 'display_interface'
-
-    cmd_to_key = {}
-    for cmds in DEVICE_COMMANDS.values():        # 遍历所有品牌
-        for key, cmd_str in cmds.items():
-            if key.startswith('l2_') or key in ('nomore', 'save_config', 'logout'):
-                continue                          # 运维命令不做翻译
-            cmd_to_key[cmd_str.lower()] = key     # 命令字符串 → 键
-
-    # ── 第二步：用输入命令查键，再用键查目标品牌命令 ──
-    cmd_lower = command.strip().lower()
-    key = cmd_to_key.get(cmd_lower)              # "display interface brief" → "display_interface"
-
-    if key and key in brand_cmds:
-        return brand_cmds[key]                   # "display_interface" → "show ip interface brief"
-
-    return command                               # 没找到对应翻译，原样返回
-```
-
-### 7.3 翻译示意图
-
-```
-输入命令：  "display interface brief"
-               │
-               ▼
-    反向查找表查找
-    'display interface brief' → 键 = 'display_interface'
-               │
-               ▼
-    在 Cisco 命令字典中查 'display_interface'
-    结果 = 'show ip interface brief'
-               │
-               ▼
-    实际发送给 Cisco 设备的命令：
-    "show ip interface brief"
-```
+品牌识别仍用于程序内部操作，例如禁用分页、保存配置和二层上联探测。用户脚本存在品牌差异时，应准备不同文件，或使用“按设备匹配”模式。
 
 ---
 
@@ -436,7 +377,6 @@ Switch_SSH_Tools/
 │   ├── detect_brand()              函数：文本 → 品牌字符串
 │   ├── get_device_commands()       函数：品牌 → 命令字典
 │   ├── get_command()               函数：品牌 + 键 → 具体命令
-│   └── translate_command_for_brand() 函数：H3C命令 → 目标品牌命令
 │
 └── core/ssh_manager_simple.py      ← SSH 执行层（网络操作）
     ├── PROMPT_REGEX                常量：提示符识别正则
@@ -446,7 +386,7 @@ Switch_SSH_Tools/
     │   ├── _extract_model()        方法：正则提取设备型号
     │   ├── _read_until_prompt()    方法：读取命令输出（检测提示符）
     │   ├── execute_command()       方法：执行单条命令
-    │   └── execute_commands()      方法：批量执行（含品牌感知翻译）
+    │   └── execute_commands()      方法：按脚本原文批量执行
     └── SSHManager                  类：多台设备的并发调度
         └── connect_all()           方法：ThreadPoolExecutor 并发连接
 ```
@@ -500,21 +440,7 @@ def _detect_brand_and_model(self):
     _brand_cache[ip] = self.brand_detected       # 保存到缓存
 ```
 
-**方向 2：批量构建翻译表（避免重复计算）**
-
-```python
-# 当前：每次调用 translate_command_for_brand() 都重建反向映射
-# 改进：程序启动时构建一次，之后复用
-
-# 在模块级别预构建（只执行一次）
-_CMD_TO_KEY: dict = {}
-for cmds in DEVICE_COMMANDS.values():
-    for key, cmd_str in cmds.items():
-        if not key.startswith('l2_') and key not in ('nomore', 'save_config', 'logout'):
-            _CMD_TO_KEY[cmd_str.lower()] = key
-```
-
-**方向 3：增大并发数（谨慎）**
+**方向 2：增大并发数（谨慎）**
 
 ```python
 # 当前：max_workers=5

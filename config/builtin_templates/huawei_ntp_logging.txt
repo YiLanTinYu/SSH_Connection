@@ -1,0 +1,8 @@
+# Huawei VRP V200：NTP 与远程日志
+system-view
+clock timezone Beijing add 08:00:00
+ntp-service enable
+ntp-service unicast-server {{NTP_SERVER}}
+info-center enable
+info-center loghost {{SYSLOG_SERVER}}
+return

@@ -1,0 +1,11 @@
+# Huawei VRP V200：开局基础配置
+# 本模板针对非 commit 型园区交换机版本。
+system-view
+sysname {{DEVICE_NAME}}
+vlan batch {{MGMT_VLAN}}
+interface Vlanif{{MGMT_VLAN}}
+ip address {{MGMT_IP}} {{MGMT_MASK}}
+quit
+ip route-static 0.0.0.0 0.0.0.0 {{DEFAULT_GATEWAY}}
+clock timezone Beijing add 08:00:00
+return

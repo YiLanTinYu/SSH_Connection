@@ -1,0 +1,10 @@
+# H3C Comware 7：Trunk 端口
+system-view
+interface {{INTERFACE}}
+description {{DESCRIPTION}}
+port link-type trunk
+port trunk pvid vlan {{NATIVE_VLAN}}
+port trunk permit vlan {{ALLOWED_VLANS}}
+undo shutdown
+quit
+return

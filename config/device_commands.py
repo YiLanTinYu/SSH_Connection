@@ -235,50 +235,11 @@ def detect_brand(version_output: str) -> str:
     return 'unknown'
 
 
-def translate_command_for_brand(command: str, brand: str) -> str:
-    """
-    将命令文件中的 H3C/华为风格命令自动转换为目标品牌的等价命令。
-
-    这是 w-sw-ssh cmd_prefix 机制的 GUI 版实现：
-    不再要求用户准备多份 .cmd.h3c / .cmd.cisco 文件，
-    而是在运行时根据识别的品牌自动翻译。
-
-    Args:
-        command: 原始命令（通常为 H3C/Huawei 格式）
-        brand:   目标品牌
-
-    Returns:
-        str: 翻译后的命令
-    """
-    if not command or not brand:
-        return command
-
-    brand_cmds = get_device_commands(brand)
-
-    # 构建反向查找表：将每个品牌的命令值映射到命令键
-    # 再用目标品牌的命令键查对应命令值
-    # 遍历所有品牌，建立 "命令字符串 → 命令键" 的全局映射
-    cmd_to_key: dict = {}
-    for cmds in DEVICE_COMMANDS.values():
-        for key, cmd_str in cmds.items():
-            if key.startswith('l2_') or key in ('nomore', 'save_config', 'logout'):
-                continue   # 运维操作不做翻译
-            # 保留最后写入（避免同一命令被不同品牌覆盖导致混乱）
-            cmd_to_key[cmd_str.lower()] = key
-
-    cmd_lower = command.strip().lower()
-    key = cmd_to_key.get(cmd_lower)
-    if key and key in brand_cmds:
-        return brand_cmds[key]
-
-    return command
-
-
 # ──────────────────────────────────────────────
 # 可扩展的命令模块接口
 # ──────────────────────────────────────────────
 class CommandModule:
-    """命令模块：支持品牌感知与自定义命令扩展"""
+    """程序内部的品牌命令模块，不改写用户业务脚本。"""
 
     def __init__(self, brand: str = 'h3c'):
         self.brand    = brand

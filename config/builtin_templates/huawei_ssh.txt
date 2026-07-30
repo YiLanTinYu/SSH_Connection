@@ -1,0 +1,18 @@
+# Huawei VRP V200：AAA 账号与 STelnet
+# 密钥生成带交互提示，不参与自动批量执行。
+# MANUAL: 首次开局请先在串口控制台执行 rsa local-key-pair create，并按设备提示选择至少 2048 位密钥。
+system-view
+aaa
+local-user {{ADMIN_USER}} password irreversible-cipher {{ADMIN_PASSWORD}}
+local-user {{ADMIN_USER}} privilege level 15
+local-user {{ADMIN_USER}} service-type ssh terminal
+quit
+stelnet server enable
+ssh user {{ADMIN_USER}} authentication-type password
+ssh user {{ADMIN_USER}} service-type stelnet
+user-interface vty 0 4
+authentication-mode aaa
+protocol inbound ssh
+idle-timeout {{IDLE_MINUTES}} 0
+quit
+return

@@ -10,7 +10,6 @@ H3C_SSH/
 │
 ├── core/                            # 核心模块
 │   ├── ssh_manager_simple.py        # SSH连接管理器（已修改 - 支持IPv6）
-│   └── ssh_manager.py              # 原SSH管理器（未修改）
 │
 ├── config/                          # 配置模块
 │   ├── device_config.py            # 设备配置管理（已修改 - 支持IPv6）

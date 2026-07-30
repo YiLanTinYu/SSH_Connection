@@ -24,6 +24,7 @@ nuitka-crash-report.xml
 # 日志文件
 logs/success/*.log
 logs/failure/*.log
+serial_*.log
 config/operation_templates.json
 
 # IDE 配置
@@ -45,3 +46,4 @@ dist/__pycache__/
 dist/**/*.log
 logs/
 .pytest_cache/
+srbuild/

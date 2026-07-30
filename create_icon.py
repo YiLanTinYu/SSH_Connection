@@ -15,6 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 ICO_PATH = ROOT / "app.ico"
 PREVIEW_PATH = ROOT / "app_icon_preview.png"
+MASTER_ICON_PATH = ROOT / "assets" / "aomt_icon_master.png"
 SELECTED_VARIANT = 4
 SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256]
 
@@ -294,18 +295,34 @@ def _make_icon(size: int, variant: int = SELECTED_VARIANT):
 
 def create_icon() -> None:
     try:
-        from PIL import Image  # noqa: F401
+        from PIL import Image
     except ImportError as exc:
         raise SystemExit("Pillow is required. Run: python -m pip install Pillow") from exc
 
-    images = [_make_icon(size, SELECTED_VARIANT) for size in SIZES]
-    images[-1].save(PREVIEW_PATH)
-    images[0].save(
-        ICO_PATH,
-        format="ICO",
-        sizes=[(size, size) for size in SIZES],
-        append_images=images[1:],
-    )
+    if MASTER_ICON_PATH.exists():
+        master = Image.open(MASTER_ICON_PATH).convert("RGBA")
+        if master.width != master.height:
+            raise SystemExit(f"Master icon must be square: {MASTER_ICON_PATH}")
+        preview = master.resize((512, 512), Image.Resampling.LANCZOS)
+        icon_source = master.resize((256, 256), Image.Resampling.LANCZOS)
+        preview.save(PREVIEW_PATH, format="PNG")
+        icon_source.save(
+            ICO_PATH,
+            format="ICO",
+            sizes=[(size, size) for size in SIZES],
+        )
+        print(f"[OK] Master icon used: {MASTER_ICON_PATH}")
+    else:
+        images = [_make_icon(size, SELECTED_VARIANT) for size in SIZES]
+        images[-1].save(PREVIEW_PATH)
+        images[0].save(
+            ICO_PATH,
+            format="ICO",
+            sizes=[(size, size) for size in SIZES],
+            append_images=images[1:],
+        )
+        print(f"[WARN] Master icon missing; generated fallback variant {SELECTED_VARIANT}")
+
     print(f"[OK] Icon generated: {ICO_PATH}")
     print(f"[OK] Preview generated: {PREVIEW_PATH}")
 

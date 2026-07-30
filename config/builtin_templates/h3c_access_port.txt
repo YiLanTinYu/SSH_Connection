@@ -1,0 +1,11 @@
+# H3C Comware 7：Access 端口
+system-view
+vlan {{ACCESS_VLAN}}
+quit
+interface {{INTERFACE}}
+description {{DESCRIPTION}}
+port link-type access
+port access vlan {{ACCESS_VLAN}}
+undo shutdown
+quit
+return

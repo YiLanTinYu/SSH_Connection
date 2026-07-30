@@ -9,11 +9,12 @@ SSH 连接管理器（paramiko 版）
 2. 品牌识别：分两步 display version → show version，精确识别 H3C/Huawei/Cisco/Ruijie/TP-Link
 3. 二层上联口探测：移植 w-sw-ssh uf_get_l2_uplink 三步链式查询
 4. 保存配置：从 DEVICE_COMMANDS 字典获取各品牌 save 命令，消除 if-else 分散
-5. 命令文件品牌感知翻译：运行时自动将 H3C 命令转换为目标品牌语法
+5. 业务命令原样执行：不对用户脚本做未经验证的跨品牌改写
 6. 线程调度：借鉴 w-sw-ssh 分批调度思路，用 ThreadPoolExecutor 实现更优雅的版本
 """
 
 import paramiko
+import ipaddress
 import re
 import threading
 from typing import Dict, List, Optional, Callable
@@ -22,12 +23,19 @@ import time
 from datetime import datetime
 import sys
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, FIRST_COMPLETED, wait
 
 # 添加项目路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.ipv6_utils import IPv6Utils, IPVersion, IPv6AddressValidator
+from config.ssh_security import (
+    HOST_KEY_INSECURE,
+    build_connect_kwargs,
+    configure_host_key_policy,
+    normalize_host_key_policy,
+    persist_host_keys,
+)
 
 
 # ──────────────────────────────────────────────────────────
@@ -39,27 +47,37 @@ PROMPT_REGEX = re.compile(
 )
 
 # IP / MAC 地址正则（用于二层上联口探测）
-RE_IPV4    = re.compile(r'\s?[1-9]\d{0,2}(\.\d{1,3}){3}\s?')
+RE_IPV4    = re.compile(r'(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])')
 RE_MAC_STD = re.compile(r'\s?([\da-f]{4}[.\-]){2}[\da-f]{4}\s?', re.IGNORECASE)
 RE_MAC_COL = re.compile(r'\s?([\da-f]{2}:){5}[\da-f]{2}\s?',     re.IGNORECASE)
+SAVE_CONFIRM_RE = re.compile(
+    r'(\[y/n\]|\(y/n\)|continue\?|overwrite|confirm|are you sure)',
+    re.IGNORECASE,
+)
 
 
 class SSHConnection:
     """SSH 连接类（单台设备）"""
 
-    def __init__(self, device_info, logger=None):
+    def __init__(self, device_info, logger=None, cancel_event=None):
         self.device_info    = device_info
         self.logger         = logger
         self.client         = None
         self._shell         = None          # 持久交互式 shell
         self.is_connected   = False
+        self.task_success   = False
         self.brand_detected = None
         self.model_detected = None          # 设备型号（借鉴 w-sw-ssh）
         self.error_message  = None
         self.command_results: List[Dict] = []
+        self.sensitive_values: List[str] = []
         self.ip_version     = IPVersion.UNKNOWN
         self.ipv6_validator = IPv6AddressValidator()
         self._print_lock    = threading.Lock()
+        self.cancel_event   = cancel_event
+        self.started_at     = datetime.now()
+        self.finished_at    = None
+        self.connection_duration_seconds = 0.0
 
         if hasattr(device_info, 'ip') and device_info.ip:
             self.ip_version = IPv6Utils.get_ip_version(device_info.ip)
@@ -69,6 +87,7 @@ class SSHConnection:
     # ──────────────────────────────────────────────────────
     def connect(self) -> bool:
         """建立 SSH 连接（支持 IPv4 / IPv6）"""
+        connection_started = time.monotonic()
         try:
             # 1. 验证 IP
             if hasattr(self.device_info, 'ip') and self.device_info.ip:
@@ -82,21 +101,30 @@ class SSHConnection:
 
             # 2. 创建 SSH 客户端
             self.client = paramiko.SSHClient()
-            self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            host_key_policy = normalize_host_key_policy(
+                getattr(self.device_info, 'host_key_policy', 'tofu')
+            )
+            known_hosts_path = configure_host_key_policy(
+                self.client, host_key_policy
+            )
+            if self.logger and host_key_policy == HOST_KEY_INSECURE:
+                self.logger.log_operation(
+                    f"安全警告: {self.device_info.ip} 已关闭 SSH Host Key 校验。",
+                    level='warning',
+                )
 
             connect_address = self._get_connect_address()
 
-            # 3. 连接（明确禁用 agent/key，强制密码认证）
-            self.client.connect(
-                hostname     = connect_address,
-                port         = self.device_info.port,
-                username     = self.device_info.username,
-                password     = self.device_info.password,
-                timeout      = 30,
-                allow_agent  = False,
-                look_for_keys= False,
+            # 3. 按设备设置使用密码或私钥认证，不读取系统隐式凭据。
+            connect_kwargs = build_connect_kwargs(
+                self.device_info, connect_address
+            )
+            self.client.connect(**connect_kwargs)
+            persist_host_keys(
+                self.client, host_key_policy, known_hosts_path
             )
             self.is_connected = True
+            self.task_success = True
 
             conn_type = "IPv6" if self.ip_version == IPVersion.IPv6 else "IPv4"
             if self.logger:
@@ -105,7 +133,10 @@ class SSHConnection:
             # 4. 建立持久 shell，等待首个提示符
             self._shell = self.client.invoke_shell(width=200, height=50)
             self._shell.settimeout(15)
-            self._read_until_prompt(timeout=10)
+            # Some VRP devices do not push a prompt until the client sends a
+            # newline. Provoke it instead of waiting for the old 10 s timeout.
+            self._shell.send('\n')
+            self._read_until_prompt(timeout=3)
 
             # 5. 禁用分页（先用通用命令，识别品牌后会按品牌重发）
             self._send_no_page_generic()
@@ -121,14 +152,24 @@ class SSHConnection:
 
             return True
 
+        except paramiko.BadHostKeyException:
+            self.error_message = (
+                "SSH Host Key 与已保存记录不一致，连接已拒绝。"
+                "请确认设备是否更换或存在中间人风险。"
+            )
         except paramiko.AuthenticationException as e:
             self.error_message = f"认证失败: {e}"
         except paramiko.SSHException as e:
             self.error_message = f"SSH 连接失败: {e}"
         except Exception as e:
             self.error_message = f"连接失败: {e}"
+        finally:
+            self.connection_duration_seconds = round(
+                max(0.0, time.monotonic() - connection_started), 3
+            )
 
         self.is_connected = False
+        self.task_success = False
         if self.logger:
             self.logger.log_connection_failure(self.device_info, self.error_message)
         return False
@@ -146,6 +187,9 @@ class SSHConnection:
             address = IPv6Utils.normalize_ipv6(address)
         return address
 
+    def _is_cancelled(self) -> bool:
+        return bool(self.cancel_event and self.cancel_event.is_set())
+
     def _read_until_prompt(self, timeout: float = 10) -> str:
         """
         读取 shell 输出直到出现命令提示符或超时。
@@ -160,7 +204,7 @@ class SSHConnection:
         """
         output  = ''
         deadline = time.time() + timeout
-        while time.time() < deadline:
+        while time.time() < deadline and not self._is_cancelled():
             try:
                 if self._shell.recv_ready():
                     chunk   = self._shell.recv(8192).decode('utf-8', errors='ignore')
@@ -186,7 +230,7 @@ class SSHConnection:
 
     def _send_no_page_generic(self):
         """连接建立后立即发送通用禁用分页命令（品牌识别前）"""
-        for cmd in ['screen-length 0 temporary', 'terminal length 0']:
+        for cmd in ['screen-length disable', 'screen-length 0 temporary', 'terminal length 0']:
             try:
                 self._shell.send(cmd + '\n')
                 time.sleep(0.3)
@@ -274,56 +318,74 @@ class SSHConnection:
     # ──────────────────────────────────────────────────────
     def execute_command(self, command: str, sleep_time: float = 0.3) -> str:
         """在持久 shell 上执行单条命令并返回输出"""
+        if self._is_cancelled():
+            return "任务已取消"
         if not self.is_connected or not self._shell:
             return "未连接"
+        command_started = time.monotonic()
         try:
             self._shell.send(command + '\n')
             time.sleep(sleep_time)
             output = self._read_until_prompt(timeout=15)
 
             self.command_results.append({
-                'command':   command,
-                'output':    output,
+                'command':   self._redact(command),
+                'output':    self._redact(output),
                 'timestamp': datetime.now().isoformat(),
+                'duration_seconds': round(
+                    time.monotonic() - command_started, 3
+                ),
             })
             return output
         except Exception as e:
             error_msg = f"命令执行失败: {e}"
             self.command_results.append({
-                'command':   command,
-                'output':    error_msg,
+                'command':   self._redact(command),
+                'output':    self._redact(error_msg),
                 'timestamp': datetime.now().isoformat(),
+                'duration_seconds': round(
+                    time.monotonic() - command_started, 3
+                ),
             })
             return error_msg
 
     def execute_commands(self, commands: List[str],
                          progress_cb: Optional[Callable] = None) -> List[Dict]:
-        """
-        批量执行命令列表，支持品牌感知翻译（借鉴 w-sw-ssh cmd_prefix 机制）
-        """
-        from config.device_commands import translate_command_for_brand
+        """按脚本内容逐条原样执行命令。"""
         results = []
-        brand   = self.brand_detected or 'h3c'
 
         for cmd in commands:
-            # 自动翻译为目标品牌命令（H3C → Cisco 等）
-            actual_cmd = translate_command_for_brand(cmd, brand)
+            if self._is_cancelled():
+                if progress_cb:
+                    progress_cb(f"  [{self.device_info.ip}] 任务已取消，停止执行后续命令")
+                break
             if progress_cb:
-                if actual_cmd != cmd:
-                    progress_cb(f"  [{self.device_info.ip}] 执行: {actual_cmd}  (译自: {cmd})")
-                else:
-                    progress_cb(f"  [{self.device_info.ip}] 执行: {actual_cmd}")
+                progress_cb(f"  [{self.device_info.ip}] 执行: {self._redact(cmd)}")
 
-            output = self.execute_command(actual_cmd)
+            output = self.execute_command(cmd)
 
             if progress_cb and output:
                 preview = '\n'.join(output.strip().splitlines()[:3])
                 if preview:
-                    progress_cb(f"  [{self.device_info.ip}] 输出:\n{preview}")
+                    progress_cb(
+                        f"  [{self.device_info.ip}] 输出:\n{self._redact(preview)}"
+                    )
 
-            results.append({'command': actual_cmd, 'output': output})
+            results.append(
+                {'command': self._redact(cmd), 'output': self._redact(output)}
+            )
 
         return results
+
+    def _redact(self, value: str) -> str:
+        text = str(value or "")
+        for secret in sorted(
+            filter(None, self.sensitive_values),
+            key=len,
+            reverse=True,
+        ):
+            text = text.replace(secret, "********")
+        return text
 
     # ──────────────────────────────────────────────────────
     # 保存配置（借鉴 w-sw-ssh uf_save）
@@ -334,6 +396,8 @@ class SSHConnection:
         各品牌 save 命令从 DEVICE_COMMANDS 字典获取，消除分散的 if-else。
         """
         from config.device_commands import get_command
+        if self._is_cancelled():
+            return False
         brand    = self.brand_detected or 'h3c'
         save_cmd = get_command(brand, 'save_config')
         if not save_cmd:
@@ -344,11 +408,17 @@ class SSHConnection:
 
         try:
             # 支持多步命令（\r 分隔）
-            for sub_cmd in save_cmd.split('\r'):
-                if sub_cmd.strip():
+            normalized_cmd = save_cmd.replace('\r\n', '\r').replace('\n', '\r')
+            for sub_cmd in normalized_cmd.split('\r'):
+                sub_cmd = sub_cmd.strip()
+                if sub_cmd:
+                    if self._is_cancelled():
+                        return False
                     self._shell.send(sub_cmd + '\n')
-                    time.sleep(0.5)
-            self._read_until_prompt(timeout=15)
+                    output = self._read_until_prompt(timeout=10)
+                    if SAVE_CONFIRM_RE.search(output or ''):
+                        self._shell.send('y\n')
+                        self._read_until_prompt(timeout=10)
             if progress_cb:
                 progress_cb(f"  [{self.device_info.ip}] 配置保存完成")
             return True
@@ -370,6 +440,8 @@ class SSHConnection:
             str: 上联口名称，如 'GigabitEthernet0/0/1'；失败返回空串
         """
         from config.device_commands import get_command, DEVICE_COMMANDS
+        if self._is_cancelled():
+            return ''
         brand = self.brand_detected or 'h3c'
 
         gw_ip_cmd     = get_command(brand, 'l2_gw_ip_cmd')
@@ -419,10 +491,18 @@ class SSHConnection:
         for line in output.split('\n'):
             m = RE_IPV4.search(line.strip())
             if m:
-                ip = m.group(0).strip()
-                if not ip.startswith('0.'):
+                ip = m.group(0)
+                if self._is_valid_ipv4(ip):
                     return ip
         return ''
+
+    @staticmethod
+    def _is_valid_ipv4(ip: str) -> bool:
+        try:
+            parsed = ipaddress.ip_address(ip)
+            return parsed.version == 4 and not ip.startswith('0.')
+        except ValueError:
+            return False
 
     def _extract_mac(self, output: str) -> str:
         """从命令输出中提取第一个 MAC 地址（xxxx.xxxx.xxxx 或 xx:xx:xx:xx:xx:xx）"""
@@ -473,13 +553,30 @@ class SSHConnection:
 
     def get_connection_info(self) -> Dict:
         """获取连接结果字典"""
+        finished_at = self.finished_at or datetime.now()
+        total_duration = max(
+            0.0, (finished_at - self.started_at).total_seconds()
+        )
+        connection_duration = min(
+            total_duration,
+            max(0.0, float(self.connection_duration_seconds or 0.0)),
+        )
         return {
-            'device_info':    self.device_info.to_dict(),
-            'is_connected':   self.is_connected,
+            'device_info':    self.device_info.to_dict(include_secrets=False),
+            'is_connected':   self.task_success,
+            'task_success':   self.task_success,
+            'ssh_active':     self.is_connected,
             'brand_detected': self.brand_detected,
             'model_detected': self.model_detected,
             'error_message':  self.error_message,
             'command_results': self.command_results,
+            'started_at': self.started_at.isoformat(timespec='seconds'),
+            'finished_at': finished_at.isoformat(timespec='seconds'),
+            'duration_seconds': round(total_duration, 3),
+            'connection_duration_seconds': round(connection_duration, 3),
+            'operation_duration_seconds': round(
+                max(0.0, total_duration - connection_duration), 3
+            ),
             'ip_version':     self.ip_version.value if self.ip_version else 0,
             'ip_version_name': (
                 'IPv6' if self.ip_version == IPVersion.IPv6
@@ -488,6 +585,10 @@ class SSHConnection:
             ),
         }
 
+    def mark_finished(self):
+        if self.finished_at is None:
+            self.finished_at = datetime.now()
+
 
 class SSHManager:
     """
@@ -495,7 +596,7 @@ class SSHManager:
 
     线程调度优化（借鉴 w-sw-ssh 分批模型 + ThreadPoolExecutor）：
     - 原 w-sw-ssh：手工 start/join 批次，最后一批的慢设备会阻塞整批
-    - 本版本：ThreadPoolExecutor + as_completed，任一设备完成即释放线程槽位
+    - 本版本：ThreadPoolExecutor + 动态补充任务，任一设备完成即释放线程槽位
     """
 
     def __init__(self, max_connections: int = 5, logger=None):
@@ -507,16 +608,25 @@ class SSHManager:
         # 建议2：逐设备完成回调（每台设备处理完立即调用，而非等全部完成）
         self.device_done_callback: Optional[Callable] = None
         self.command_file:  Optional[str] = None
+        self.command_directory: Optional[str] = None
+        self.command_lines: Optional[List[str]] = None
+        self.command_label: str = ""
+        self.required_brand: str = ""
+        self.sensitive_values: List[str] = []
         # 扩展选项（对应 w-sw-ssh --save 和 --l2_sw）
         self.save_after_exec   = False
         self.detect_l2_uplink  = False
         self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._active_connections = set()
 
     def _load_commands(self) -> List[str]:
         """
         加载命令文件（优先自定义文件，其次默认 SSH_command.txt）。
         每行一条命令，# 开头为注释，空行忽略。
         """
+        if self.command_lines is not None:
+            return list(self.command_lines)
         if self.command_file and os.path.isfile(self.command_file):
             file_path = self.command_file
         else:
@@ -538,6 +648,56 @@ class SSHManager:
 
         return ['display version']
 
+    @staticmethod
+    def _safe_script_stem(value: str) -> str:
+        """Convert a device value to a Windows-safe script filename stem."""
+        return re.sub(r'[<>:"/\\|?*]+', '_', str(value or '').strip()).strip(' .')
+
+    def resolve_command_file(self, device_info) -> Optional[str]:
+        """Resolve a per-device script only by the exact device name."""
+        if self.command_lines is not None:
+            return self.command_label or "内存配置模板"
+        if not self.command_directory:
+            if self.command_file and os.path.isfile(self.command_file):
+                return self.command_file
+            root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            default_file = os.path.join(root_dir, 'SSH_command.txt')
+            return default_file if os.path.isfile(default_file) else None
+
+        script_dir = os.path.abspath(self.command_directory)
+        if not os.path.isdir(script_dir):
+            return None
+
+        stem = self._safe_script_stem(getattr(device_info, 'name', ''))
+        if not stem:
+            return None
+        candidate = f'{stem}.txt'
+
+        try:
+            files = {name.lower(): name for name in os.listdir(script_dir)}
+        except OSError:
+            return None
+        actual_name = files.get(candidate.lower())
+        if actual_name:
+            path = os.path.join(script_dir, actual_name)
+            if os.path.isfile(path):
+                return path
+        return None
+
+    def _load_commands_for_device(self, device_info) -> tuple:
+        if self.command_lines is not None:
+            return list(self.command_lines), self.command_label or "内存配置模板"
+        file_path = self.resolve_command_file(device_info)
+        if not file_path:
+            return [], None
+        try:
+            with open(file_path, 'r', encoding='utf-8-sig') as f:
+                commands = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
+            return commands, file_path
+        except (OSError, UnicodeError) as e:
+            self._notify(f"  [{device_info.ip}] 读取脚本失败: {e}")
+            return [], file_path
+
     def set_progress_callback(self, callback: Callable):
         self.progress_callback = callback
 
@@ -556,12 +716,105 @@ class SSHManager:
     def add_devices(self, device_infos: List):
         self._device_infos = list(device_infos)
 
+    def _emit_device_done(self, result_info: Dict):
+        if self.device_done_callback:
+            try:
+                self.device_done_callback(result_info)
+            except Exception as e:
+                if self.logger:
+                    self.logger.log_operation(f"设备完成回调失败: {e}", level='error')
+
+    def _record_cancelled_device(self, device_info, reason: str = "任务已取消"):
+        connection = SSHConnection(device_info, self.logger, self._stop_event)
+        connection.sensitive_values = list(self.sensitive_values)
+        connection.error_message = reason
+        connection.task_success = False
+        connection.mark_finished()
+        result_info = connection.get_connection_info()
+        with self._lock:
+            self.connections.append(connection)
+        self._emit_device_done(result_info)
+        return connection
+
+    def _process_device_cancellable(self, device_info) -> SSHConnection:
+        """Process one device with cancellation and visible error reporting."""
+        connection = SSHConnection(device_info, self.logger, self._stop_event)
+        connection.sensitive_values = list(self.sensitive_values)
+        with self._lock:
+            self._active_connections.add(connection)
+
+        self._notify(f"正在连接 {device_info.ip}...")
+
+        try:
+            if self._stop_event.is_set():
+                connection.error_message = "任务已取消"
+                self._notify(f"  [{device_info.ip}] 任务已取消，跳过连接")
+            else:
+                success = connection.connect()
+
+                if success:
+                    brand = connection.brand_detected or device_info.brand or 'unknown'
+                    model = connection.model_detected or ''
+                    desc = f"{brand}  {model}".strip() if model else brand
+                    self._notify(f"✔ {device_info.ip} 连接成功  (品牌: {desc})")
+
+                    if self.required_brand and brand != self.required_brand:
+                        connection.task_success = False
+                        connection.error_message = (
+                            f"模板仅适用于 {self.required_brand}，"
+                            f"实际检测品牌为 {brand}"
+                        )
+                        self._notify(
+                            f"  [{device_info.ip}] {connection.error_message}，"
+                            "已阻止命令下发"
+                        )
+                        return connection
+
+                    commands, command_path = self._load_commands_for_device(device_info)
+                    if not commands:
+                        connection.task_success = False
+                        connection.error_message = "未找到可用脚本或脚本内容为空"
+                        self._notify(f"  [{device_info.ip}] 未找到可用脚本或脚本内容为空，已跳过")
+                        return connection
+                    self._notify(f"  [{device_info.ip}] 使用脚本: {os.path.basename(command_path)}")
+                    self._notify(f"  [{device_info.ip}] 开始执行命令，共 {len(commands)} 条...")
+                    connection.execute_commands(commands, progress_cb=self.progress_callback)
+                    if not self._stop_event.is_set():
+                        self._notify(f"  [{device_info.ip}] 全部命令执行完毕")
+
+                    if self.save_after_exec and not self._stop_event.is_set():
+                        connection.save_config(progress_cb=self.progress_callback)
+
+                    if self.detect_l2_uplink and not self._stop_event.is_set():
+                        uplink = connection.detect_l2_uplink(progress_cb=self.progress_callback)
+                        if uplink:
+                            self._notify(f"  [{device_info.ip}] 上联口: {uplink}")
+                else:
+                    self._notify(f"✘ {device_info.ip} 连接失败: {connection.error_message}")
+        except Exception as e:
+            connection.task_success = False
+            connection.error_message = f"处理失败: {e}"
+            self._notify(f"✘ {device_info.ip} 处理失败: {e}")
+            if self.logger:
+                self.logger.log_operation(f"{device_info.ip} 处理失败: {e}", level='error')
+        finally:
+            connection.mark_finished()
+            result_info = connection.get_connection_info()
+            connection.disconnect()
+            with self._lock:
+                self._active_connections.discard(connection)
+                self.connections.append(connection)
+            self._emit_device_done(result_info)
+
+        return connection
+
     # ──────────────────────────────────────────────────────
     # 单设备处理逻辑（由线程池并发调用）
     # ──────────────────────────────────────────────────────
     def _process_device(self, device_info) -> SSHConnection:
         """连接单台设备并执行所有任务"""
         connection = SSHConnection(device_info, self.logger)
+        connection.sensitive_values = list(self.sensitive_values)
         self._notify(f"正在连接 {device_info.ip}...")
 
         success = connection.connect()
@@ -572,8 +825,26 @@ class SSHManager:
             desc  = f"{brand}  {model}".strip() if model else brand
             self._notify(f"✔ {device_info.ip} 连接成功  (品牌: {desc})")
 
-            # 执行业务命令（品牌感知翻译）
-            commands = self._load_commands()
+            if self.required_brand and brand != self.required_brand:
+                connection.task_success = False
+                connection.error_message = (
+                    f"模板仅适用于 {self.required_brand}，实际检测品牌为 {brand}"
+                )
+                self._notify(
+                    f"  [{device_info.ip}] {connection.error_message}，已阻止命令下发"
+                )
+                connection.mark_finished()
+                result_info = connection.get_connection_info()
+                connection.disconnect()
+                with self._lock:
+                    self.connections.append(connection)
+                self._emit_device_done(result_info)
+                return connection
+
+            # 业务命令严格按脚本原文执行
+            commands, command_path = self._load_commands_for_device(device_info)
+            if command_path:
+                self._notify(f"  [{device_info.ip}] 使用脚本: {os.path.basename(command_path)}")
             self._notify(f"  [{device_info.ip}] 开始执行命令，共 {len(commands)} 条...")
             connection.execute_commands(commands, progress_cb=self.progress_callback)
             self._notify(f"  [{device_info.ip}] 全部命令执行完毕")
@@ -590,9 +861,9 @@ class SSHManager:
         else:
             self._notify(f"✘ {device_info.ip} 连接失败: {connection.error_message}")
 
+        connection.mark_finished()
         result_info = connection.get_connection_info()
         connection.disconnect()
-        connection.is_connected = result_info.get('is_connected', False)
 
         with self._lock:
             self.connections.append(connection)
@@ -601,8 +872,9 @@ class SSHManager:
         if self.device_done_callback:
             try:
                 self.device_done_callback(result_info)
-            except Exception:
-                pass
+            except Exception as e:
+                if self.logger:
+                    self.logger.log_operation(f"设备完成回调失败: {e}", level='error')
 
         return connection
 
@@ -613,7 +885,9 @@ class SSHManager:
         if self.is_running:
             return False
         self.is_running = True
+        self._stop_event.clear()
         self.connections.clear()
+        self._active_connections.clear()
         return True
 
     def wait_for_completion(self, timeout: Optional[float] = None) -> bool:
@@ -625,22 +899,60 @@ class SSHManager:
 
         try:
             with ThreadPoolExecutor(max_workers=self.max_connections) as executor:
-                futures = {
-                    executor.submit(self._process_device, dev): dev
-                    for dev in devices
-                }
-                for future in as_completed(futures, timeout=timeout):
-                    dev = futures[future]
-                    try:
-                        future.result()
-                    except Exception as e:
-                        self._notify(f"X {dev.ip} processing error: {e}")
+                next_index = 0
+                futures = {}
+
+                def submit_next():
+                    nonlocal next_index
+                    if self._stop_event.is_set() or next_index >= len(devices):
+                        return False
+                    dev = devices[next_index]
+                    next_index += 1
+                    futures[executor.submit(self._process_device_cancellable, dev)] = dev
+                    return True
+
+                for _ in range(min(self.max_connections, len(devices))):
+                    submit_next()
+
+                while futures:
+                    done, _ = wait(futures, timeout=0.2, return_when=FIRST_COMPLETED)
+                    if not done:
+                        if self._stop_event.is_set():
+                            for future in list(futures):
+                                future.cancel()
+                        continue
+
+                    for future in done:
+                        dev = futures.pop(future)
+                        try:
+                            if future.cancelled():
+                                self._record_cancelled_device(dev)
+                            else:
+                                future.result()
+                        except Exception as e:
+                            self._notify(f"✘ {dev.ip} 处理异常: {e}")
+                            if self.logger:
+                                self.logger.log_operation(f"{dev.ip} 处理异常: {e}", level='error')
+
+                    if not self._stop_event.is_set():
+                        while len(futures) < self.max_connections and submit_next():
+                            pass
+
+                if self._stop_event.is_set() and next_index < len(devices):
+                    for dev in devices[next_index:]:
+                        self._record_cancelled_device(dev)
             return True
         finally:
             self.is_running = False
 
     def stop_connections(self):
         self.is_running = False
+        self._stop_event.set()
+        self._notify("正在停止连接任务...")
+        with self._lock:
+            active_connections = list(self._active_connections)
+        for conn in active_connections:
+            conn.disconnect()
         for conn in self.connections:
             conn.disconnect()
 
@@ -648,10 +960,10 @@ class SSHManager:
         return [conn.get_connection_info() for conn in self.connections]
 
     def get_successful_connections(self) -> List[SSHConnection]:
-        return [c for c in self.connections if c.is_connected]
+        return [c for c in self.connections if c.task_success]
 
     def get_failed_connections(self) -> List[SSHConnection]:
-        return [c for c in self.connections if not c.is_connected]
+        return [c for c in self.connections if not c.task_success]
 
     def execute_command_on_all(self, command: str) -> Dict:
         """在所有已连接设备上执行同一命令"""

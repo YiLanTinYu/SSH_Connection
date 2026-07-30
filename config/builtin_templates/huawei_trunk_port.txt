@@ -1,0 +1,10 @@
+# Huawei VRP V200：Trunk 端口
+system-view
+interface {{INTERFACE}}
+description {{DESCRIPTION}}
+port link-type trunk
+port trunk pvid vlan {{NATIVE_VLAN}}
+port trunk allow-pass vlan {{ALLOWED_VLANS}}
+undo shutdown
+quit
+return

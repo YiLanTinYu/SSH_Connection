@@ -1,0 +1,9 @@
+# Huawei VRP V200：Console 安全配置
+# 依赖：AAA 中已存在具有 terminal 服务的本地用户。
+# 注意：退出当前 Console 会话后认证方式才会生效。
+system-view
+user-interface console 0
+authentication-mode aaa
+idle-timeout {{IDLE_MINUTES}} 0
+quit
+return

@@ -1,0 +1,11 @@
+# H3C Comware 7：SNMPv3 SHA/AES128 安全监控
+system-view
+snmp-agent
+snmp-agent sys-info version v3
+snmp-agent sys-info contact {{CONTACT}}
+snmp-agent sys-info location {{LOCATION}}
+snmp-agent group v3 {{SNMP_GROUP}} privacy
+snmp-agent usm-user v3 {{SNMP_USER}} {{SNMP_GROUP}} simple authentication-mode sha {{SNMP_AUTH_PASSWORD}} privacy-mode aes128 {{SNMP_PRIV_PASSWORD}}
+snmp-agent target-host trap address udp-domain {{NMS_IP}} params securityname {{SNMP_USER}} v3 privacy
+snmp-agent trap enable
+return

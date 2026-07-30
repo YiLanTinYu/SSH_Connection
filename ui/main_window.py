@@ -11,90 +11,193 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QLineEdit, QPushButton, QTableWidget,
                              QTableWidgetItem, QTextEdit, QFileDialog,
                              QMessageBox, QGroupBox, QSpinBox, QComboBox,
-                             QProgressBar, QSplitter, QHeaderView, QFrame,
+                             QProgressBar, QSplitter, QSplitterHandle, QHeaderView, QFrame,
                              QStatusBar, QToolBar, QAction, QSizePolicy,
                              QAbstractItemView, QApplication, QCheckBox,
                              QScrollArea, QListWidget, QListWidgetItem,
-                             QDialog, QDialogButtonBox)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer
-from PyQt5.QtGui import QFont, QFontMetrics, QColor, QPalette, QIcon, QPixmap, QPainter, QBrush, QPen, QLinearGradient
+                             QDialog, QDialogButtonBox, QInputDialog)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer, QRectF, QPointF
+from PyQt5.QtGui import (
+    QFont, QFontMetrics, QColor, QPalette, QIcon, QPixmap, QPainter,
+    QBrush, QPen, QLinearGradient, QPainterPath,
+)
 from typing import List, Dict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from pathlib import Path
 import os
 import sys
 import json
 import subprocess
 import html
+import re
+import paramiko
 
 # 添加项目路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.device_config import DeviceConfigManager, DeviceInfo
-from config.device_commands import CommandModule
-from core.ssh_manager_simple import SSHManager
+from config.device_commands import CommandModule, get_command
+from config.builtin_templates import get_builtin_templates
+from config.app_info import APP_AUTHOR, APP_NAME, APP_SHORT_NAME, APP_VERSION
+from config.ssh_security import (
+    build_connect_kwargs,
+    configure_host_key_policy,
+    normalize_host_key_policy,
+    persist_host_keys,
+)
+from core.ssh_manager_simple import SSHManager, SSHConnection
+from ui.collapsible_sidebar import CollapsibleSidebar
+from ui.result_dialog import ResultCenterDialog
+from ui.maintenance_target_dialog import MaintenanceTargetDialog
+from ui.serial_console import SerialConsoleDialog
+from ui.ssh_console import SSHConsoleDialog
+from ui.file_transfer_dialog import FileTransferDialog
+from ui.packet_capture_dialog import PacketCaptureDialog
+from ui.config_template_dialog import ConfigTemplateDialog
+from ui.device_diagnostics_worker import DeviceDiagnosticsWorker
+from ui.health_profile_dialog import HealthProfileDialog
 from utils.logger import ConnectionLogger
 from utils.ipv6_utils import IPv6Utils, IPv6AddressValidator
+from utils.maintenance_tools import (
+    calculate_subnet,
+    check_tcp_port,
+    normalize_device_config,
+    normalize_host,
+    parse_tcp_ports,
+    run_traceroute,
+    unified_config_diff,
+    write_config_backup,
+    write_lines,
+)
+from utils.device_diagnostics import (
+    normalize_lookup_target,
+    validate_interface_name,
+)
 
 
 # ─────────────────────── 主题配色 ───────────────────────
 class Theme:
-    """TailAdmin-inspired light dashboard theme."""
-    # 主色
-    PRIMARY        = "#465FFF"
-    PRIMARY_LIGHT  = "#ECF3FF"
-    PRIMARY_DARK   = "#3446CC"
-    ACCENT         = "#12B76A"
+    """AOMT aurora theme derived from the selected brand icon."""
+    # 品牌色
+    PRIMARY        = "#0788B5"
+    PRIMARY_LIGHT  = "#E2F5F8"
+    PRIMARY_DARK   = "#07566A"
+    ACCENT         = "#16C7B7"
+    CORAL          = "#F06449"
     
     # 背景
-    BG_MAIN        = "#F9FAFB"
-    BG_PANEL       = "#FFFFFF"   # 面板背景
-    BG_CARD        = "#F9FAFB"
-    BG_HEADER      = "#F9FAFB"
+    BG_MAIN        = "#EAF1F2"
+    BG_PANEL       = "#F9FBFA"
+    BG_CARD        = "#F1F6F5"
+    BG_HEADER      = "#E7F0F0"
     BG_INPUT       = "#FFFFFF"
+    BG_DEEP        = "#063847"
+    BG_DEEP_ALT    = "#082D3A"
     
     # 文字
-    TEXT_PRIMARY   = "#101828"
-    TEXT_SECONDARY = "#475467"
-    TEXT_HINT      = "#98A2B3"
-    TEXT_WHITE     = "#FFFFFF"
-    TEXT_HEADER    = "#475467"
+    TEXT_PRIMARY   = "#12313A"
+    TEXT_SECONDARY = "#45636B"
+    TEXT_HINT      = "#789097"
+    TEXT_WHITE     = "#F8FFFD"
+    TEXT_HEADER    = "#DDF7F4"
     
     # 状态
-    SUCCESS        = "#12B76A"
-    SUCCESS_BG     = "#ECFDF3"
-    WARNING        = "#F79009"
-    WARNING_BG     = "#FFFAEB"
-    ERROR          = "#F04438"
-    ERROR_BG       = "#FEF3F2"
-    INFO           = "#465FFF"
-    INFO_BG        = "#ECF3FF"
+    SUCCESS        = "#0B9F8D"
+    SUCCESS_BG     = "#DDF8F2"
+    WARNING        = "#D18A24"
+    WARNING_BG     = "#FFF4D9"
+    ERROR          = "#D95445"
+    ERROR_BG       = "#FDE9E5"
+    INFO           = "#0788B5"
+    INFO_BG        = "#E2F5F8"
     
     # 边框
-    BORDER         = "#EAECF0"
-    BORDER_FOCUS   = "#465FFF"
+    BORDER         = "#C9DADB"
+    BORDER_FOCUS   = "#16AFC2"
     
     # 按钮
-    BTN_PRIMARY    = "#465FFF"
-    BTN_PRIMARY_H  = "#3446CC"
-    BTN_SUCCESS    = "#12B76A"
-    BTN_SUCCESS_H  = "#039855"
-    BTN_DANGER     = "#F04438"
-    BTN_DANGER_H   = "#D92D20"
-    BTN_NEUTRAL    = "#667085"
-    BTN_NEUTRAL_H  = "#475467"
+    BTN_PRIMARY    = "#0788B5"
+    BTN_PRIMARY_H  = "#08759A"
+    BTN_SUCCESS    = "#0AA895"
+    BTN_SUCCESS_H  = "#078A7B"
+    BTN_DANGER     = "#D95445"
+    BTN_DANGER_H   = "#BF4136"
+    BTN_NEUTRAL    = "#42656E"
+    BTN_NEUTRAL_H  = "#31515A"
     
     # 阴影/分割
-    SHADOW         = "rgba(0,0,0,0.08)"
-    DIVIDER        = "#E2E8F0"
+    SHADOW         = "rgba(6,56,71,0.10)"
+    DIVIDER        = "#D6E3E3"
     
     # 进度条
-    PROGRESS_BG    = "#E3F2FD"
-    PROGRESS_CHUNK = "#1E88E5"
+    PROGRESS_BG    = "#164B58"
+    PROGRESS_CHUNK = "#16C7B7"
 
     # 表格行
-    ROW_ALT        = "#FCFCFD"
-    ROW_HOVER      = "#F2F4F7"
-    ROW_SELECT     = "#ECF3FF"
+    ROW_ALT        = "#F2F7F6"
+    ROW_HOVER      = "#E4F4F2"
+    ROW_SELECT     = "#D4F1EF"
+
+
+class ModernSplitterHandle(QSplitterHandle):
+    """A generous drag target with a restrained, centered visual grip."""
+
+    def __init__(self, orientation, parent):
+        super().__init__(orientation, parent)
+        self._hovered = False
+        self.setCursor(Qt.SplitHCursor if orientation == Qt.Horizontal else Qt.SplitVCursor)
+
+    def enterEvent(self, event):
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        color = QColor(Theme.ACCENT if self._hovered else "#9CB8BB")
+        center = self.rect().center()
+
+        if self.orientation() == Qt.Horizontal:
+            grip_width = 4
+            grip_height = min(68, max(36, self.height() // 8))
+            grip_rect = QRectF(
+                center.x() - grip_width / 2,
+                center.y() - grip_height / 2,
+                grip_width,
+                grip_height,
+            )
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(color)
+            painter.drawRoundedRect(grip_rect, 2, 2)
+            dot_color = QColor(Theme.BG_PANEL)
+            painter.setBrush(dot_color)
+            for offset in (-9, 0, 9):
+                painter.drawEllipse(QPointF(center.x(), center.y() + offset), 1.2, 1.2)
+        else:
+            grip_width = min(68, max(36, self.width() // 8))
+            grip_height = 4
+            grip_rect = QRectF(
+                center.x() - grip_width / 2,
+                center.y() - grip_height / 2,
+                grip_width,
+                grip_height,
+            )
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(color)
+            painter.drawRoundedRect(grip_rect, 2, 2)
+        painter.end()
+
+
+class ModernSplitter(QSplitter):
+    def createHandle(self):
+        return ModernSplitterHandle(self.orientation(), self)
 
 
 def make_icon(color: str, shape: str = "circle") -> QIcon:
@@ -165,14 +268,29 @@ QMainWindow, QWidget {{
     font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
     font-size: 13px;
 }}
+QWidget#app_root, QWidget#workspace_body {{
+    background-color: {Theme.BG_MAIN};
+}}
+QScrollArea, QScrollArea > QWidget > QWidget {{
+    background: transparent;
+}}
+QToolTip {{
+    color: {Theme.TEXT_WHITE};
+    background-color: {Theme.BG_DEEP};
+    border: 1px solid #1A6674;
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-size: 13px;
+    font-weight: 400;
+}}
 
 /* GroupBox */
 QGroupBox {{
     background-color: {Theme.BG_PANEL};
     border: 1px solid {Theme.BORDER};
-    border-radius: 8px;
-    margin-top: 14px;
-    padding: 12px 10px 10px 10px;
+    border-radius: 7px;
+    margin-top: 15px;
+    padding: 14px 11px 11px 11px;
     font-size: 13px;
     font-weight: 600;
     color: {Theme.TEXT_PRIMARY};
@@ -180,18 +298,33 @@ QGroupBox {{
 QGroupBox::title {{
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    padding: 0 8px;
-    left: 12px;
-    color: {Theme.TEXT_PRIMARY};
+    padding: 1px 9px;
+    left: 10px;
+    color: {Theme.PRIMARY_DARK};
+    background-color: {Theme.BG_PANEL};
     font-size: 13px;
     font-weight: 700;
+}}
+QGroupBox#device_list_group,
+QGroupBox#connection_log_group {{
+    background: transparent;
+}}
+QGroupBox#device_list_group {{
+    border-top: 2px solid {Theme.PRIMARY};
+}}
+QGroupBox#connection_log_group {{
+    border-top: 2px solid {Theme.ACCENT};
+}}
+QGroupBox#device_list_group::title,
+QGroupBox#connection_log_group::title {{
+    background-color: {Theme.BG_MAIN};
 }}
 
 /* 输入框 */
 QLineEdit, QSpinBox, QComboBox {{
     background-color: {Theme.BG_INPUT};
-    border: 1px solid #D0D5DD;
-    border-radius: 8px;
+    border: 1px solid {Theme.BORDER};
+    border-radius: 6px;
     padding: 6px 10px;
     font-size: 13px;
     color: {Theme.TEXT_PRIMARY};
@@ -215,8 +348,9 @@ QComboBox::down-arrow {{
 QComboBox QAbstractItemView {{
     border: 1px solid {Theme.BORDER};
     border-radius: 5px;
-    background: white;
+    background: {Theme.BG_PANEL};
     selection-background-color: {Theme.ROW_SELECT};
+    selection-color: {Theme.PRIMARY_DARK};
     outline: none;
 }}
 QSpinBox::up-button, QSpinBox::down-button {{
@@ -228,7 +362,7 @@ QSpinBox::up-button, QSpinBox::down-button {{
 /* 通用按钮基类 */
 QPushButton {{
     border: none;
-    border-radius: 8px;
+    border-radius: 6px;
     padding: 7px 14px;
     font-size: 13px;
     font-weight: 600;
@@ -236,13 +370,14 @@ QPushButton {{
     cursor: pointer;
 }}
 QPushButton:disabled {{
-    background-color: #EAECF0;
-    color: #98A2B3;
+    background-color: #DDE7E7;
+    color: #8AA0A4;
 }}
 
 /* 主操作按钮 */
 QPushButton#btn_primary {{
-    background-color: {Theme.BTN_PRIMARY};
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 {Theme.PRIMARY_DARK}, stop:0.55 {Theme.BTN_PRIMARY}, stop:1 #16AFC2);
     color: white;
 }}
 QPushButton#btn_primary:hover {{
@@ -254,27 +389,30 @@ QPushButton#btn_primary:pressed {{
 
 /* 成功按钮（开始连接） */
 QPushButton#btn_success {{
-    background-color: {Theme.BTN_SUCCESS};
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #087B72, stop:0.5 {Theme.BTN_SUCCESS}, stop:1 {Theme.ACCENT});
     color: white;
     font-size: 13px;
     min-height: 36px;
-    border-radius: 8px;
+    border-radius: 6px;
     letter-spacing: 0px;
 }}
 QPushButton#btn_success:hover {{
     background-color: {Theme.BTN_SUCCESS_H};
 }}
 QPushButton#btn_success:pressed {{
-    background-color: #1B5E20;
+    background-color: #066B63;
 }}
 
 /* 危险按钮（清空） */
 QPushButton#btn_danger {{
-    background-color: {Theme.BTN_DANGER};
-    color: white;
+    background-color: {Theme.ERROR_BG};
+    color: {Theme.BTN_DANGER};
+    border: 1px solid #E9A79E;
 }}
 QPushButton#btn_danger:hover {{
     background-color: {Theme.BTN_DANGER_H};
+    color: white;
 }}
 
 /* 中性按钮 */
@@ -288,23 +426,44 @@ QPushButton#btn_neutral:hover {{
 
 /* 轮廓按钮 */
 QPushButton#btn_outline {{
-    background-color: #FFFFFF;
-    color: {Theme.PRIMARY};
-    border: 1px solid {Theme.PRIMARY};
+    background-color: {Theme.BG_PANEL};
+    color: {Theme.PRIMARY_DARK};
+    border: 1px solid #75B9C4;
 }}
 QPushButton#btn_outline:hover {{
     background-color: {Theme.INFO_BG};
+    border-color: {Theme.PRIMARY};
+}}
+
+QCheckBox {{
+    color: {Theme.TEXT_SECONDARY};
+    spacing: 8px;
+    background: transparent;
+}}
+QCheckBox::indicator {{
+    width: 17px;
+    height: 17px;
+    border: 1px solid #8FA8AD;
+    border-radius: 4px;
+    background: {Theme.BG_INPUT};
+}}
+QCheckBox::indicator:hover {{
+    border-color: {Theme.ACCENT};
+}}
+QCheckBox::indicator:checked {{
+    background-color: {Theme.ACCENT};
+    border-color: {Theme.ACCENT};
 }}
 
 /* 表格 */
 QTableWidget {{
     background-color: {Theme.BG_PANEL};
     border: 1px solid {Theme.BORDER};
-    border-radius: 8px;
+    border-radius: 7px;
     gridline-color: {Theme.DIVIDER};
     alternate-background-color: {Theme.ROW_ALT};
     selection-background-color: {Theme.ROW_SELECT};
-    selection-color: {Theme.TEXT_PRIMARY};
+    selection-color: {Theme.PRIMARY_DARK};
     font-size: 13px;
     outline: none;
 }}
@@ -316,14 +475,14 @@ QTableWidget::item:hover {{
     background-color: {Theme.ROW_HOVER};
 }}
 QHeaderView::section {{
-    background-color: {Theme.BG_HEADER};
+    background-color: {Theme.BG_DEEP};
     color: {Theme.TEXT_HEADER};
     font-weight: 700;
     font-size: 13px;
-    padding: 8px 10px;
+    padding: 9px 10px;
     border: none;
-    border-bottom: 1px solid {Theme.BORDER};
-    border-right: 1px solid {Theme.BORDER};
+    border-bottom: 1px solid #0C5261;
+    border-right: 1px solid #164E5A;
 }}
 QHeaderView::section:first {{
     border-top-left-radius: 8px;
@@ -335,14 +494,14 @@ QHeaderView::section:last {{
 
 /* 日志文本 */
 QTextEdit {{
-    background-color: #0D1117;
-    color: #C9D1D9;
-    border: 1px solid #1F2937;
-    border-radius: 8px;
+    background-color: {Theme.BG_DEEP_ALT};
+    color: #D6F2EF;
+    border: 1px solid #155565;
+    border-radius: 7px;
     font-family: "Consolas", "Courier New", monospace;
     font-size: 12px;
-    padding: 6px;
-    selection-background-color: #264F78;
+    padding: 9px;
+    selection-background-color: #087E91;
 }}
 
 /* 进度条 */
@@ -363,10 +522,12 @@ QProgressBar::chunk {{
 
 /* 状态栏 */
 QStatusBar {{
-    background-color: #101828;
-    color: rgba(255,255,255,0.85);
+    background-color: {Theme.BG_DEEP};
+    color: rgba(248,255,253,0.88);
     font-size: 12px;
-    padding: 2px 8px;
+    padding: 7px 12px;
+    min-height: 38px;
+    border-top: 1px solid #0C5261;
 }}
 QStatusBar::item {{
     border: none;
@@ -374,7 +535,7 @@ QStatusBar::item {{
 
 /* 标签 */
 QLabel#section_title {{
-    color: {Theme.TEXT_PRIMARY};
+    color: {Theme.PRIMARY_DARK};
     font-size: 13px;
     font-weight: 700;
 }}
@@ -393,51 +554,57 @@ QFrame[frameShape="4"], QFrame[frameShape="5"] {{
 
 /* 滚动条 */
 QScrollBar:vertical {{
-    background: {Theme.BG_CARD};
-    width: 8px;
-    border-radius: 4px;
+    background: rgba(156,184,187,0.16);
+    width: 7px;
+    margin: 2px 0;
+    border-radius: 3px;
 }}
 QScrollBar::handle:vertical {{
-    background: #D0D5DD;
-    border-radius: 4px;
-    min-height: 30px;
+    background: #AFC7C9;
+    border-radius: 3px;
+    min-height: 44px;
+    margin: 0 1px;
 }}
 QScrollBar::handle:vertical:hover {{
-    background: #98A2B3;
+    background: {Theme.ACCENT};
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0;
 }}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background: transparent;
+}}
 QScrollBar:horizontal {{
-    background: {Theme.BG_CARD};
-    height: 8px;
-    border-radius: 4px;
+    background: rgba(156,184,187,0.16);
+    height: 7px;
+    margin: 0 2px;
+    border-radius: 3px;
 }}
 QScrollBar::handle:horizontal {{
-    background: #D0D5DD;
-    border-radius: 4px;
-    min-width: 30px;
+    background: #AFC7C9;
+    border-radius: 3px;
+    min-width: 44px;
+    margin: 1px 0;
 }}
 QScrollBar::handle:horizontal:hover {{
-    background: #98A2B3;
+    background: {Theme.ACCENT};
 }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
     width: 0;
 }}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+    background: transparent;
+}}
 
 /* Splitter */
 QSplitter::handle {{
-    background-color: {Theme.DIVIDER};
-    width: 4px;
-}}
-QSplitter::handle:hover {{
-    background-color: {Theme.PRIMARY};
+    background: transparent;
 }}
 
 QListWidget {{
     background-color: {Theme.BG_CARD};
     border: 1px solid {Theme.BORDER};
-    border-radius: 8px;
+    border-radius: 6px;
     padding: 4px;
     outline: none;
 }}
@@ -451,7 +618,7 @@ QListWidget::item:hover {{
 }}
 QListWidget::item:selected {{
     background-color: {Theme.ROW_SELECT};
-    color: {Theme.PRIMARY};
+    color: {Theme.PRIMARY_DARK};
 }}
 
 /* MessageBox */
@@ -469,6 +636,56 @@ QMessageBox QPushButton:hover {{
 """
 
 
+class AuroraHeader(QWidget):
+    """Paints the restrained data-flow header used by the AOMT brand."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("aurora_header")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        background = QLinearGradient(0, 0, self.width(), 0)
+        background.setColorAt(0.0, QColor("#063847"))
+        background.setColorAt(0.58, QColor("#075466"))
+        background.setColorAt(1.0, QColor("#083D52"))
+        painter.fillRect(self.rect(), background)
+
+        width = max(1, self.width())
+        height = max(1, self.height())
+
+        main_flow = QPainterPath()
+        main_flow.moveTo(width * 0.47, height * 1.08)
+        main_flow.cubicTo(
+            width * 0.60, height * 0.85,
+            width * 0.68, height * 0.08,
+            width * 0.86, height * -0.10,
+        )
+        flow_gradient = QLinearGradient(width * 0.48, height, width * 0.87, 0)
+        flow_gradient.setColorAt(0.0, QColor(19, 198, 181, 72))
+        flow_gradient.setColorAt(0.55, QColor(13, 177, 201, 108))
+        flow_gradient.setColorAt(1.0, QColor(27, 116, 219, 82))
+        painter.setPen(QPen(QBrush(flow_gradient), max(18, int(height * 0.34)),
+                            Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.drawPath(main_flow)
+
+        light_flow = QPainterPath()
+        light_flow.moveTo(width * 0.58, height * 1.06)
+        light_flow.cubicTo(
+            width * 0.69, height * 0.67,
+            width * 0.75, height * 0.22,
+            width * 0.94, height * 0.02,
+        )
+        painter.setPen(QPen(QColor(139, 240, 230, 42), 2.0,
+                            Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.drawPath(light_flow)
+
+        painter.end()
+
+
 # ─────────────────────── 状态标签组件 ───────────────────────
 class StatusBadge(QLabel):
     """彩色状态徽章（建议4：作为 cell widget 嵌入表格状态列）
@@ -476,25 +693,29 @@ class StatusBadge(QLabel):
     支持状态：待连接 / 连接中 / 连接成功(✔) / 连接失败(✘)
     """
     _STYLES = {
-        "待连接":  (Theme.TEXT_SECONDARY, "#E2E8F0"),
+        "待连接":  (Theme.TEXT_SECONDARY, "#DDE8E8"),
         "连接成功": (Theme.SUCCESS,        Theme.SUCCESS_BG),
         "✔":      (Theme.SUCCESS,        Theme.SUCCESS_BG),
         "连接中":  (Theme.WARNING,         Theme.WARNING_BG),
         "⏳":     (Theme.WARNING,         Theme.WARNING_BG),
     }
 
-    def __init__(self, text: str, parent=None):
+    def __init__(self, text: str, parent=None, font_px: int = 14):
         super().__init__(text, parent)
         self.setAlignment(Qt.AlignCenter)
-        self.setContentsMargins(4, 2, 4, 2)
+        self._font_px = font_px
         self._set_style(text)
 
     def setText(self, text: str):
         super().setText(text)
         self._set_style(text)
 
+    def set_font_size(self, font_px: int):
+        self._font_px = max(12, int(font_px))
+        self._set_style(self.text())
+
     def _set_style(self, text: str):
-        color, bg = Theme.TEXT_SECONDARY, "#E2E8F0"
+        color, bg = Theme.TEXT_SECONDARY, "#DDE8E8"
         for key, (c, b) in self._STYLES.items():
             if text.startswith(key):
                 color, bg = c, b
@@ -503,7 +724,8 @@ class StatusBadge(QLabel):
             color, bg = Theme.ERROR, Theme.ERROR_BG
         self.setStyleSheet(
             f"color: {color}; background-color: {bg}; border-radius: 8px;"
-            f"padding: 4px 10px; font-size: 15px; font-weight: 600;"
+            f"margin: 4px 6px; padding: 1px 8px; min-height: 20px;"
+            f"font-size: {self._font_px}px; font-weight: 600;"
         )
 
 
@@ -541,14 +763,11 @@ class ConnectionWorker(QThread):
         self.ssh_manager.set_device_done_callback(self._on_device_done)
         self.ssh_manager.start_connections()
         self.ssh_manager.wait_for_completion()
-        # 全量结果仍然发出（用于型号/品牌更新兜底）
-        results = self.ssh_manager.get_results()
-        for result in results:
-            self.result_signal.emit(result)
         self.finished_signal.emit()
 
     def _on_device_done(self, result: dict):
         """SSHManager 每台设备完成时的回调（在工作线程中执行，通过信号转发到主线程）"""
+        self.result_signal.emit(result)
         device_info   = result.get("device_info", {})
         is_connected  = result.get("is_connected", False)
         error_message = result.get("error_message", "") or ""
@@ -582,14 +801,28 @@ class PingWorker(QThread):
         failure = 0
         total = len(self.ips)
 
-        for index, ip in enumerate(self.ips, start=1):
-            ok, detail = self._ping(ip)
-            if ok:
-                success += 1
-                self.progress_signal.emit(f"[Ping] ({index}/{total}) {ip} 可达，响应正常")
-            else:
-                failure += 1
-                self.progress_signal.emit(f"[Ping] ({index}/{total}) {ip} 不可达，{detail}")
+        max_workers = min(32, max(1, total))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(self._ping, ip): ip
+                for ip in self.ips
+            }
+            for index, future in enumerate(as_completed(futures), start=1):
+                ip = futures[future]
+                try:
+                    ok, detail = future.result()
+                except Exception as exc:
+                    ok, detail = False, f"执行失败: {exc}"
+                if ok:
+                    success += 1
+                    self.progress_signal.emit(
+                        f"[Ping] ({index}/{total}) {ip} 可达，响应正常"
+                    )
+                else:
+                    failure += 1
+                    self.progress_signal.emit(
+                        f"[Ping] ({index}/{total}) {ip} 不可达，{detail}"
+                    )
 
         self.finished_signal.emit(total, success, failure)
 
@@ -620,6 +853,150 @@ class PingWorker(QThread):
             return False, f"执行失败: {exc}"
 
 
+class MaintenanceWorker(QThread):
+    """Run batch maintenance checks without blocking the UI thread."""
+
+    progress_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal(str, int, int, int)
+
+    def __init__(self, mode: str, devices: List, options=None, logger=None):
+        super().__init__()
+        self.mode = mode
+        self.devices = list(devices)
+        self.options = options or {}
+        self.logger = logger
+
+    def run(self):
+        if self.mode == "port":
+            tasks = [
+                (device, port)
+                for device in self.devices
+                for port in self.options.get("ports", [])
+            ]
+            self._run_parallel(tasks, self._check_port, max_workers=10)
+        elif self.mode == "ssh_login":
+            self._run_parallel(self.devices, self._test_ssh_login, max_workers=5)
+        elif self.mode == "traceroute":
+            self._run_parallel(self.devices, self._trace_device, max_workers=3)
+        elif self.mode == "backup":
+            self._run_parallel(self.devices, self._backup_config, max_workers=5)
+        else:
+            self.finished_signal.emit(self.mode, 0, 0, 0)
+
+    def _run_parallel(self, tasks, handler, max_workers: int):
+        total = len(tasks)
+        success = 0
+        failure = 0
+        if not tasks:
+            self.finished_signal.emit(self.mode, 0, 0, 0)
+            return
+
+        with ThreadPoolExecutor(max_workers=min(max_workers, total)) as executor:
+            futures = {executor.submit(handler, task): task for task in tasks}
+            for index, future in enumerate(as_completed(futures), start=1):
+                try:
+                    ok, message = future.result()
+                except Exception as exc:
+                    ok, message = False, f"任务异常: {exc}"
+                success += int(ok)
+                failure += int(not ok)
+                self.progress_signal.emit(f"({index}/{total}) {message}")
+
+        self.finished_signal.emit(self.mode, total, success, failure)
+
+    @staticmethod
+    def _device_label(device) -> str:
+        name = str(getattr(device, "name", "") or "").strip()
+        ip = str(getattr(device, "ip", "") or "").strip()
+        return f"{name} [{ip}]" if name else ip
+
+    def _check_port(self, task):
+        device, port = task
+        ip = str(getattr(device, "ip", "") or "")
+        ok, detail = check_tcp_port(ip, port)
+        state = "开放" if ok else "不可用"
+        return ok, f"[端口检测] {self._device_label(device)} TCP/{port} {state}，{detail}"
+
+    def _test_ssh_login(self, device):
+        client = paramiko.SSHClient()
+        policy = normalize_host_key_policy(
+            getattr(device, "host_key_policy", "tofu")
+        )
+        known_hosts_path = configure_host_key_policy(client, policy)
+        try:
+            kwargs = build_connect_kwargs(
+                device, normalize_host(getattr(device, "ip", ""))
+            )
+            kwargs.update(timeout=10, banner_timeout=10, auth_timeout=10)
+            client.connect(**kwargs)
+            persist_host_keys(client, policy, known_hosts_path)
+            transport = client.get_transport()
+            if not transport or not transport.is_active():
+                return False, f"[SSH 登录] {self._device_label(device)} 会话未激活"
+            return True, f"[SSH 登录] {self._device_label(device)} 认证成功，未执行设备命令"
+        except paramiko.AuthenticationException:
+            return False, f"[SSH 登录] {self._device_label(device)} 认证失败"
+        except paramiko.SSHException as exc:
+            return False, f"[SSH 登录] {self._device_label(device)} SSH 协议错误: {exc}"
+        except OSError as exc:
+            return False, f"[SSH 登录] {self._device_label(device)} 连接失败: {exc}"
+        finally:
+            client.close()
+
+    def _trace_device(self, device):
+        ip = str(getattr(device, "ip", "") or "")
+        ok, output = run_traceroute(ip)
+        state = "完成" if ok else "失败"
+        return ok, f"[路由跟踪] {self._device_label(device)} {state}\n{output}"
+
+    def _backup_config(self, device):
+        connection = SSHConnection(device, self.logger)
+        try:
+            if not connection.connect():
+                return False, (
+                    f"[配置备份] {self._device_label(device)} 连接失败: "
+                    f"{connection.error_message or '未知错误'}"
+                )
+
+            brand = connection.brand_detected or getattr(device, "brand", "") or "h3c"
+            command = get_command(brand, "display_config")
+            output = connection.execute_command(command, sleep_time=0.5)
+            if not output or re.search(
+                r"%\s*Invalid|Unrecognized command|命令执行失败|Error:",
+                output,
+                re.IGNORECASE,
+            ):
+                return False, (
+                    f"[配置备份] {self._device_label(device)} 未获得有效配置，"
+                    f"实际查询命令: {command}"
+                )
+
+            config_text = normalize_device_config(output, command)
+            if not config_text:
+                return False, (
+                    f"[配置备份] {self._device_label(device)} 清理终端信息后"
+                    "没有可保存的配置内容"
+                )
+
+            output_dir = self.options["output_dir"]
+            device_name = getattr(device, "name", "") or getattr(device, "ip", "")
+            config_path, metadata_path = write_config_backup(
+                output_dir,
+                device_name=device_name,
+                device_ip=getattr(device, "ip", ""),
+                device_port=getattr(device, "port", 22),
+                brand=brand,
+                command=command,
+                config_text=config_text,
+            )
+            return True, (
+                f"[配置备份] {self._device_label(device)} 已保存配置: "
+                f"{config_path}；元数据: {metadata_path}"
+            )
+        finally:
+            connection.disconnect()
+
+
 # ─────────────────────── 主窗口 ───────────────────────
 class MainWindow(QMainWindow):
     """主窗口 - 现代化 UI"""
@@ -629,7 +1006,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AOMT")
+        self.setWindowTitle(f"{APP_SHORT_NAME} v{APP_VERSION}")
         self.setMinimumSize(1024, 768)
         self.resize(2560, 1600)
         self.setWindowIcon(build_app_icon())
@@ -641,10 +1018,19 @@ class MainWindow(QMainWindow):
         self.command_module    = CommandModule()
         self.connection_worker = None
         self.ping_worker       = None
+        self.maintenance_worker = None
+        self.diagnostics_worker = None
         self._connected_count  = 0
         self._total_count      = 0
         self._ping_log_lines   = []
+        self._maintenance_log_lines = []
         self._command_file     = None   # None = 使用默认 SSH_command.txt
+        self._command_directory = None
+        self._command_lines = None
+        self._required_template_brand = ""
+        self._active_template_name = ""
+        self._active_template_sensitive = False
+        self._template_secret_values = []
         self._current_font_pt  = 14     # 当前字号，防止重复刷新
         self._form_labels      = []
         self._template_store_path = os.path.join(
@@ -653,6 +1039,11 @@ class MainWindow(QMainWindow):
             "operation_templates.json",
         )
         self._config_templates = []
+        self.execution_results = []
+        self._serial_console = None
+        self._ssh_console = None
+        self._file_transfer_dialog = None
+        self._packet_capture_dialog = None
 
         # 应用样式
         self.setStyleSheet(APP_STYLE)
@@ -680,73 +1071,102 @@ class MainWindow(QMainWindow):
         return 10
 
     def _apply_font_pt(self, pt: int):
-        """将字号 pt 转换为 px 并重新应用到 QSS 和全局字体"""
-        # 96 dpi 标准：px = pt * 96 / 72
-        px      = max(14, round(pt * 96 / 72))   # 正文像素
-        px_sm   = max(13, px - 1)                 # 小号（标签/状态栏）
-        px_log  = 21                          # 日志保持约 16pt
+        """Apply one responsive typography scale based on semantic UI roles."""
+        body_px = max(15, min(17, pt))
+        small_px = max(13, body_px - 2)
+        group_title_px = body_px + 1
+        section_title_px = body_px + 2
+        page_title_px = body_px + 5
+        header_title_px = body_px + 12
+        header_subtitle_px = max(13, body_px - 3)
+        log_px = 21  # The connection log remains 16 pt equivalent.
+
+        def replace_size(style, selector_pattern, pixel_size):
+            return re.sub(
+                rf'({selector_pattern}\s*\{{[^}}]*font-size:\s*)\d+px',
+                lambda match: match.group(1) + f'{pixel_size}px',
+                style,
+            )
 
         new_style = APP_STYLE
-        # 替换各 font-size 占位值（全局/输入/按钮/表格 → px，日志/状态 → px_sm）
-        import re
-        # 全局通用 font-size（13px）
-        new_style = re.sub(r'(QMainWindow, QWidget \{[^}]*font-size:\s*)\d+px',
-                           lambda m: m.group(1) + f'{px}px', new_style)
-        new_style = re.sub(r'(QGroupBox\s*\{[^}]*font-size:\s*)\d+px',
-                           lambda m: m.group(1) + f'{px}px', new_style)
-        new_style = re.sub(r'(QGroupBox::title\s*\{[^}]*font-size:\s*)\d+px',
-                           lambda m: m.group(1) + f'{px}px', new_style)
-        new_style = re.sub(r'(QLineEdit, QSpinBox, QComboBox\s*\{[^}]*font-size:\s*)\d+px',
-                           lambda m: m.group(1) + f'{px}px', new_style)
-        new_style = re.sub(r'(QPushButton\s*\{[^}]*font-size:\s*)\d+px',
-                           lambda m: m.group(1) + f'{px}px', new_style)
-        new_style = re.sub(r'(QPushButton#btn_success\s*\{[^}]*font-size:\s*)\d+px',
-                           lambda m: m.group(1) + f'{px}px', new_style)
-        new_style = re.sub(r'(QTableWidget\s*\{[^}]*font-size:\s*)\d+px',
-                           lambda m: m.group(1) + f'{px}px', new_style)
-        new_style = re.sub(r'(QHeaderView::section\s*\{[^}]*font-size:\s*)\d+px',
-                           lambda m: m.group(1) + f'{px}px', new_style)
-        # 小号：日志/状态/标签
-        new_style = re.sub(r'(QTextEdit\s*\{[^}]*font-size:\s*)\d+px',
-                           lambda m: m.group(1) + f'{px_log}px', new_style)
-        new_style = re.sub(r'(QStatusBar\s*\{[^}]*font-size:\s*)\d+px',
-                           lambda m: m.group(1) + f'{px_sm}px', new_style)
-        new_style = re.sub(r'(QLabel#field_label\s*\{[^}]*font-size:\s*)\d+px',
-                           lambda m: m.group(1) + f'{px_sm}px', new_style)
-
+        new_style = replace_size(new_style, r'QMainWindow, QWidget', body_px)
+        new_style = replace_size(new_style, r'QToolTip', small_px)
+        new_style = replace_size(new_style, r'QGroupBox', body_px)
+        new_style = replace_size(new_style, r'QGroupBox::title', group_title_px)
+        new_style = replace_size(new_style, r'QLineEdit, QSpinBox, QComboBox', body_px)
+        new_style = replace_size(new_style, r'QPushButton', body_px)
+        new_style = replace_size(new_style, r'QPushButton#btn_success', body_px)
+        new_style = replace_size(new_style, r'QTableWidget', body_px)
+        new_style = replace_size(new_style, r'QHeaderView::section', group_title_px)
+        new_style = replace_size(new_style, r'QTextEdit', log_px)
+        new_style = replace_size(new_style, r'QStatusBar', small_px + 1)
+        new_style = replace_size(new_style, r'QLabel#field_label', body_px)
+        new_style = replace_size(new_style, r'QLabel#section_title', section_title_px)
         self.setStyleSheet(new_style)
 
-        # 全局字体
         app = QApplication.instance()
+        app_point_size = max(10, round(body_px * 0.75))
         if app:
-            app.setFont(QFont("Microsoft YaHei", pt))
-        # 日志区等宽字体单独设置
+            app.setFont(QFont("Microsoft YaHei", app_point_size))
+
         if hasattr(self, 'log_text'):
             self.log_text.setFont(QFont("Consolas", 16))
         if hasattr(self, '_title_lbl'):
             self._title_lbl.setStyleSheet(
-                f"color: {Theme.TEXT_PRIMARY}; font-size: {pt + 10}px; font-weight: 700; "
-                "letter-spacing: 0px; background: transparent;"
+                f"color: {Theme.TEXT_WHITE}; font-size: {header_title_px}px; "
+                "font-weight: 700; letter-spacing: 0px; background: transparent;"
             )
+        if hasattr(self, '_subtitle_lbl'):
+            self._subtitle_lbl.setStyleSheet(
+                "color: rgba(221,247,244,0.72); background: transparent; "
+                f"font-size: {header_subtitle_px}px;"
+            )
+        if hasattr(self, '_left_panel') and isinstance(self._left_panel, CollapsibleSidebar):
+            self._left_panel.set_page_title_font_size(page_title_px)
         if hasattr(self, '_ver_lbl'):
             self._ver_lbl.setStyleSheet(
-                f"color: {Theme.TEXT_HINT}; font-size: {pt + 2}px; background: transparent;"
+                f"color: rgba(221,247,244,0.78); font-size: {small_px}px; "
+                "background: transparent;"
             )
         if hasattr(self, 'cmd_file_label'):
             self.cmd_file_label.setStyleSheet(
-                f"color: {Theme.TEXT_SECONDARY}; font-size: {pt + 2}px; "
+                f"color: {Theme.TEXT_SECONDARY}; font-size: {body_px}px; "
                 f"background: {Theme.BG_CARD}; border: 1px solid {Theme.BORDER}; "
-                f"border-radius: 4px; padding: 4px 6px;"
+                "border-radius: 4px; padding: 4px 6px;"
             )
         if hasattr(self, '_cmd_tip_label'):
-            self._cmd_tip_label.setStyleSheet(f"color: {Theme.TEXT_HINT}; font-size: {pt + 2}px;")
+            self._cmd_tip_label.setStyleSheet(
+                f"color: {Theme.TEXT_HINT}; font-size: {small_px}px;"
+            )
         if hasattr(self, 'save_check'):
-            self.save_check.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-size: {pt + 2}px;")
+            self.save_check.setStyleSheet(
+                f"color: {Theme.TEXT_SECONDARY}; font-size: {body_px}px;"
+            )
         if hasattr(self, 'l2_uplink_check'):
-            self.l2_uplink_check.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-size: {pt + 2}px;")
+            self.l2_uplink_check.setStyleSheet(
+                f"color: {Theme.TEXT_SECONDARY}; font-size: {body_px}px;"
+            )
         if hasattr(self, '_log_title_label'):
-            self._log_title_label.setStyleSheet(f"color: {Theme.TEXT_HINT}; font-size: {pt + 1}px;")
-        self._update_form_labels(pt)
+            self._log_title_label.setStyleSheet(
+                f"color: {Theme.TEXT_SECONDARY}; font-size: {small_px}px; "
+                "background: transparent;"
+            )
+
+        self._status_badge_font_px = max(13, body_px - 3)
+        if hasattr(self, 'device_table'):
+            table_font = QFont("Microsoft YaHei")
+            table_font.setPixelSize(body_px)
+            row_height = max(36, QFontMetrics(table_font).height() + 14)
+            vertical_header = self.device_table.verticalHeader()
+            vertical_header.setMinimumSectionSize(row_height)
+            vertical_header.setDefaultSectionSize(row_height)
+            for row in range(self.device_table.rowCount()):
+                self.device_table.setRowHeight(row, row_height)
+                badge = self.device_table.cellWidget(row, 9)
+                if isinstance(badge, StatusBadge):
+                    badge.set_font_size(self._status_badge_font_px)
+
+        self._update_form_labels(app_point_size)
         self._update_left_content_min_height()
 
     @staticmethod
@@ -789,11 +1209,14 @@ class MainWindow(QMainWindow):
             label.setMaximumWidth(width)
 
     def _update_left_content_min_height(self):
-        if not hasattr(self, '_left_content'):
-            return
-        self._left_content.setMinimumHeight(self._left_content_minimum_height())
+        if hasattr(self, '_left_panel') and isinstance(self._left_panel, CollapsibleSidebar):
+            self._left_panel.refresh_current_page_geometry()
+        elif hasattr(self, '_left_content'):
+            self._left_content.setMinimumHeight(self._left_content_minimum_height())
 
     def _left_content_minimum_height(self) -> int:
+        if hasattr(self, '_left_panel') and isinstance(self._left_panel, CollapsibleSidebar):
+            return self._left_panel.current_page_minimum_height()
         if not hasattr(self, '_left_content') or not self._left_content.layout():
             return 0
         layout = self._left_content.layout()
@@ -828,7 +1251,7 @@ class MainWindow(QMainWindow):
         self._update_left_content_min_height()
 
         chrome_height = 132
-        if hasattr(self, '_left_panel'):
+        if hasattr(self, '_left_panel') and isinstance(self._left_panel, QScrollArea):
             viewport = self._left_panel.viewport()
             if viewport.height() > 0:
                 chrome_height = max(chrome_height, self.height() - viewport.height())
@@ -842,16 +1265,63 @@ class MainWindow(QMainWindow):
     def _update_left_panel_limit(self):
         if not hasattr(self, '_left_panel') or not hasattr(self, '_main_splitter'):
             return
-        max_width = max(360, self.width() // 2)
-        self._left_panel.setMaximumWidth(max_width)
+        if isinstance(self._left_panel, CollapsibleSidebar):
+            max_width = max(
+                CollapsibleSidebar.MIN_EXPANDED_WIDTH,
+                self.width() // 2,
+            )
+            self._left_panel.set_expanded_maximum_width(max_width)
+            if not self._left_panel.is_expanded():
+                return
+        else:
+            max_width = max(360, self.width() // 2)
+            self._left_panel.setMaximumWidth(max_width)
         sizes = self._main_splitter.sizes()
         if sizes and sizes[0] > max_width:
             total = sum(sizes)
             self._main_splitter.setSizes([max_width, max(1, total - max_width)])
 
+    def _on_left_sidebar_expansion_changed(self, expanded: bool):
+        if not hasattr(self, '_main_splitter'):
+            return
+        total = sum(self._main_splitter.sizes()) or self._main_splitter.width()
+        if expanded:
+            max_width = max(
+                CollapsibleSidebar.MIN_EXPANDED_WIDTH,
+                self.width() // 2,
+            )
+            target_width = min(
+                max(CollapsibleSidebar.MIN_EXPANDED_WIDTH, int(total * 0.30)),
+                max_width,
+            )
+        else:
+            target_width = CollapsibleSidebar.COLLAPSED_WIDTH
+        self._main_splitter.setSizes([
+            target_width,
+            max(1, total - target_width),
+        ])
+        QTimer.singleShot(0, self._update_ops_tools_columns)
+
+    def _update_ops_tools_columns(self):
+        if not hasattr(self, '_ops_tools_layout') or not hasattr(self, '_left_panel'):
+            return
+        columns = 2 if self._left_panel.is_expanded() and self._left_panel.width() >= 660 else 1
+        if getattr(self, '_ops_tools_columns', None) == columns:
+            return
+        self._ops_tools_columns = columns
+        for button in self._ops_tool_buttons:
+            self._ops_tools_layout.removeWidget(button)
+        for index, button in enumerate(self._ops_tool_buttons):
+            row, column = divmod(index, columns)
+            self._ops_tools_layout.addWidget(button, row, column)
+        for column in range(2):
+            self._ops_tools_layout.setColumnStretch(column, 1 if column < columns else 0)
+        self._update_left_content_min_height()
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._update_left_panel_limit()
+        self._update_ops_tools_columns()
         pt = self._calc_font_pt(self.width())
         if pt != self._current_font_pt:
             self._current_font_pt = pt
@@ -861,10 +1331,14 @@ class MainWindow(QMainWindow):
     def _init_statusbar(self):
         sb = QStatusBar()
         sb.setSizeGripEnabled(False)
+        sb.setMinimumHeight(52)
         self.setStatusBar(sb)
 
         # 左侧固定标题（永不改变）
-        self._status_label = QLabel("就绪  |  交换机自动化运维工具 v1.0")
+        self._status_label = QLabel(
+            f"{APP_NAME}  |  版本 v{APP_VERSION}  |  作者：{APP_AUTHOR}"
+        )
+        self._status_label.setContentsMargins(4, 4, 4, 4)
         self._status_label.setStyleSheet("color: rgba(255,255,255,0.75); background: transparent;")
         sb.addWidget(self._status_label)
 
@@ -877,6 +1351,7 @@ class MainWindow(QMainWindow):
 
         # 右侧动态状态/设备数标签
         self._device_count_label = QLabel("设备数: 0")
+        self._device_count_label.setContentsMargins(4, 4, 4, 4)
         self._device_count_label.setStyleSheet(
             "color: rgba(255,255,255,0.75); background: transparent; margin-right: 8px;"
         )
@@ -901,6 +1376,7 @@ class MainWindow(QMainWindow):
     # ── 主布局 ───────────────────────────────────────────
     def init_ui(self):
         central = QWidget()
+        central.setObjectName("app_root")
         self.setCentralWidget(central)
 
         # 顶部标题栏
@@ -913,94 +1389,136 @@ class MainWindow(QMainWindow):
 
         # 主体内容
         body = QWidget()
+        body.setObjectName("workspace_body")
         body_layout = QHBoxLayout(body)
-        body_layout.setContentsMargins(12, 12, 12, 12)
-        body_layout.setSpacing(12)
+        body_layout.setContentsMargins(14, 14, 14, 14)
+        body_layout.setSpacing(14)
 
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.setHandleWidth(6)
+        splitter = ModernSplitter(Qt.Horizontal)
+        splitter.setHandleWidth(12)
         splitter.setChildrenCollapsible(False)
 
         left_panel  = self.create_left_panel()
         right_panel = self.create_right_panel()
         splitter.addWidget(left_panel)
         splitter.addWidget(right_panel)
-        splitter.setSizes([360, 840])
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([CollapsibleSidebar.COLLAPSED_WIDTH, 1132])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
         self._main_splitter = splitter
         self._left_panel = left_panel
+        left_panel.expansionChanged.connect(self._on_left_sidebar_expansion_changed)
+        splitter.splitterMoved.connect(lambda *_: self._update_ops_tools_columns())
         self._update_left_panel_limit()
 
         body_layout.addWidget(splitter)
         root_layout.addWidget(body)
 
     def _build_header(self) -> QWidget:
-        """TailAdmin 风格顶部栏"""
-        header = QWidget()
-        header.setFixedHeight(68)
-        header.setStyleSheet(
-            f"background: {Theme.BG_PANEL}; border-bottom: 1px solid {Theme.BORDER};"
-        )
+        """AOMT brand header with the selected aurora data-flow language."""
+        header = AuroraHeader()
+        header.setFixedHeight(84)
         hl = QHBoxLayout(header)
-        hl.setContentsMargins(20, 0, 20, 0)
+        hl.setContentsMargins(24, 0, 24, 0)
+        hl.setSpacing(16)
 
-        # 图标
-        """
         icon_lbl = QLabel()
-        icon_pix = build_app_icon().pixmap(36, 36)
-        icon_lbl.setPixmap(icon_pix)
+        icon_lbl.setFixedSize(56, 56)
+        icon_lbl.setAlignment(Qt.AlignCenter)
+        icon_lbl.setStyleSheet("background: transparent;")
+        icon_lbl.setPixmap(
+            build_app_icon().pixmap(52, 52, QIcon.Normal, QIcon.On)
+        )
         hl.addWidget(icon_lbl)
-        """
 
-        # 标题
-        self._title_lbl = QLabel("交换机自动化运维工具")
+        separator = QFrame()
+        separator.setFrameShape(QFrame.VLine)
+        separator.setFixedHeight(42)
+        separator.setStyleSheet("color: rgba(221,247,244,0.26); background: transparent;")
+        hl.addWidget(separator)
+
+        title_layout = QVBoxLayout()
+        title_layout.setSpacing(2)
+        self._title_lbl = QLabel(APP_NAME)
         self._title_lbl.setStyleSheet(
-            f"color: {Theme.TEXT_PRIMARY}; font-size: 24px; font-weight: 700; "
+            f"color: {Theme.TEXT_WHITE}; font-size: 21px; font-weight: 700; "
             "letter-spacing: 0px; background: transparent;"
         )
-        hl.addWidget(self._title_lbl)
-        hl.addStretch()
-
-        # 版本号
-        self._ver_lbl = QLabel("by YiLanTinYu")
-        self._ver_lbl.setStyleSheet(
-            f"color: {Theme.TEXT_HINT}; font-size: 16px; background: transparent;"
+        self._subtitle_lbl = QLabel("NETWORK OPERATIONS CONSOLE")
+        self._subtitle_lbl.setStyleSheet(
+            "color: rgba(221,247,244,0.66); font-size: 12px; background: transparent;"
         )
-        hl.addWidget(self._ver_lbl)
+        title_layout.addWidget(self._title_lbl)
+        title_layout.addWidget(self._subtitle_lbl)
+        hl.addLayout(title_layout)
+        hl.addStretch()
         return header
 
     # ── 左侧面板 ─────────────────────────────────────────
     def create_left_panel(self) -> QWidget:
-        scroll = QScrollArea()
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setMinimumWidth(360)
-        scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        sidebar = CollapsibleSidebar(self._sidebar_icon_directory())
+        pages = (
+            (
+                "devices",
+                "设备管理",
+                "devices.svg",
+                (self._build_input_group(), self._build_excel_group()),
+            ),
+            (
+                "tasks",
+                "执行任务",
+                "terminal-window.svg",
+                (self._build_command_group(), self._build_action_group()),
+            ),
+            (
+                "tools",
+                "运维工具",
+                "toolbox.svg",
+                (self._build_ops_tools_group(),),
+            ),
+            (
+                "templates",
+                "配置模板",
+                "files.svg",
+                (self._build_config_templates_group(),),
+            ),
+        )
+        for key, title, icon_filename, groups in pages:
+            sidebar.add_page(
+                key,
+                title,
+                icon_filename,
+                self._build_sidebar_page(groups),
+            )
+        self._left_content = sidebar
+        return sidebar
 
-        panel = QWidget()
-        panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
-        self._left_content = panel
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
+    @staticmethod
+    def _sidebar_icon_directory() -> Path:
+        relative = Path("assets") / "icons" / "phosphor"
+        candidates = [
+            Path(__file__).resolve().parent.parent / relative,
+            Path(sys.executable).resolve().parent / relative,
+            Path.cwd() / relative,
+        ]
+        for candidate in candidates:
+            if candidate.is_dir():
+                return candidate
+        return candidates[0]
+
+    @staticmethod
+    def _build_sidebar_page(groups) -> QWidget:
+        page = QWidget()
+        page.setObjectName("sidebar_page")
+        page.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 4, 0)
         layout.setSpacing(10)
-
-        for group in (
-            self._build_input_group(),
-            self._build_excel_group(),
-            self._build_command_group(),
-            self._build_action_group(),
-            self._build_ops_tools_group(),
-            self._build_config_templates_group(),
-        ):
+        for group in groups:
             group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
             layout.addWidget(group, 0)
         layout.addStretch()
-        self._update_left_content_min_height()
-        scroll.setWidget(panel)
-        return scroll
+        return page
 
     def _build_input_group(self) -> QGroupBox:
         group = QGroupBox("添加设备")
@@ -1030,29 +1548,76 @@ class MainWindow(QMainWindow):
         self.brand_combo.addItems(["H3C", "Huawei", "Ruijie", "Cisco", "TP-Link"])
         add_form_row(1, "品 牌:", self.brand_combo)
 
+        self.group_input = QLineEdit()
+        self.group_input.setPlaceholderText("例如：核心交换机")
+        add_form_row(2, "分 组:", self.group_input)
+
+        self.tags_input = QLineEdit()
+        self.tags_input.setPlaceholderText("例如：机房A,核心")
+        add_form_row(3, "标 签:", self.tags_input)
+
         # IP
         self.ip_input = QLineEdit()
         self.ip_input.setPlaceholderText("192.168.1.1  或  2001:db8::1")
-        add_form_row(2, "IP 地址:", self.ip_input)
+        add_form_row(4, "IP 地址:", self.ip_input)
 
         # 端口
         self.port_spin = QSpinBox()
         self.port_spin.setRange(1, 65535)
         self.port_spin.setValue(22)
-        add_form_row(3, "端 口:", self.port_spin)
+        add_form_row(5, "端 口:", self.port_spin)
 
         # 用户名
         self.username_input = QLineEdit()
         self.username_input.setPlaceholderText("admin")
-        add_form_row(4, "用户名:", self.username_input)
+        add_form_row(6, "用户名:", self.username_input)
 
-        # 密码
+        self.auth_method_combo = QComboBox()
+        self.auth_method_combo.addItem("密码认证", "password")
+        self.auth_method_combo.addItem("私钥认证", "key")
+        self.auth_method_combo.currentIndexChanged.connect(
+            self._update_auth_fields
+        )
+        add_form_row(7, "认 证:", self.auth_method_combo)
+
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.Password)
         self.password_input.setPlaceholderText("••••••••")
-        add_form_row(5, "密 码:", self.password_input)
+        self.password_label = self._create_form_label("密 码:")
+        form.addWidget(self.password_label, 8, 0)
+        form.addWidget(self.password_input, 8, 1)
+
+        self.private_key_row = QWidget()
+        key_layout = QHBoxLayout(self.private_key_row)
+        key_layout.setContentsMargins(0, 0, 0, 0)
+        key_layout.setSpacing(6)
+        self.private_key_input = QLineEdit()
+        self.private_key_input.setPlaceholderText("选择 OpenSSH/PEM 私钥")
+        key_button = QPushButton("…")
+        key_button.setFixedWidth(42)
+        key_button.setToolTip("选择 SSH 私钥文件")
+        key_button.clicked.connect(self.browse_private_key)
+        key_layout.addWidget(self.private_key_input, 1)
+        key_layout.addWidget(key_button)
+        self.private_key_label = self._create_form_label("私 钥:")
+        form.addWidget(self.private_key_label, 9, 0)
+        form.addWidget(self.private_key_row, 9, 1)
+
+        self.key_passphrase_input = QLineEdit()
+        self.key_passphrase_input.setEchoMode(QLineEdit.Password)
+        self.key_passphrase_input.setPlaceholderText("私钥无口令可留空")
+        self.key_passphrase_label = self._create_form_label("口 令:")
+        form.addWidget(self.key_passphrase_label, 10, 0)
+        form.addWidget(self.key_passphrase_input, 10, 1)
+
+        self.host_key_policy_combo = QComboBox()
+        self.host_key_policy_combo.addItem("首次信任，后续校验", "tofu")
+        self.host_key_policy_combo.addItem("严格校验", "strict")
+        self.host_key_policy_combo.addItem("不校验（不推荐）", "insecure")
+        add_form_row(11, "主机键:", self.host_key_policy_combo)
 
         layout.addLayout(form)
+        self._update_auth_fields()
 
         # 添加按钮
         self.add_btn = QPushButton("＋  添加设备")
@@ -1072,6 +1637,11 @@ class MainWindow(QMainWindow):
         self.import_btn.clicked.connect(self.import_excel)
         layout.addWidget(self.import_btn)
 
+        self.encrypt_excel_btn = QPushButton("🔒  加密 Excel 认证信息")
+        self.encrypt_excel_btn.setObjectName("btn_outline")
+        self.encrypt_excel_btn.clicked.connect(self.encrypt_excel_passwords)
+        layout.addWidget(self.encrypt_excel_btn)
+
         self.template_btn = QPushButton("⬇  下载 Excel 模板")
         self.template_btn.setObjectName("btn_outline")
         self.template_btn.clicked.connect(self.download_template)
@@ -1084,6 +1654,16 @@ class MainWindow(QMainWindow):
         group = QGroupBox("业务命令文件")
         layout = QVBoxLayout(group)
         layout.setSpacing(6)
+
+        mode_row = QGridLayout()
+        mode_row.setColumnStretch(1, 1)
+        mode_row.addWidget(self._create_form_label("模式:"), 0, 0)
+        self.cmd_mode_combo = QComboBox()
+        self.cmd_mode_combo.addItem("统一脚本", "single")
+        self.cmd_mode_combo.addItem("按设备匹配", "per_device")
+        self.cmd_mode_combo.currentIndexChanged.connect(self.on_command_mode_changed)
+        mode_row.addWidget(self.cmd_mode_combo, 0, 1)
+        layout.addLayout(mode_row)
 
         # 当前文件路径显示
         path_row = QGridLayout()
@@ -1119,7 +1699,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(btn_row)
 
         # 提示文字
-        self._cmd_tip_label = QLabel("每行一条命令，# 开头为注释")
+        self._cmd_tip_label = QLabel("命令原样发送；每行一条，# 开头为注释")
         self._cmd_tip_label.setStyleSheet(f"color: {Theme.TEXT_HINT}; font-size: 16px;")
         layout.addWidget(self._cmd_tip_label)
 
@@ -1195,20 +1775,188 @@ class MainWindow(QMainWindow):
         log_row.addWidget(self.clear_log_btn)
         layout.addLayout(log_row)
 
+        self.result_center_btn = QPushButton("▤  执行结果中心")
+        self.result_center_btn.setObjectName("btn_outline")
+        self.result_center_btn.setToolTip("按设备查看完整命令输出、耗时与错误，并导出结果")
+        self.result_center_btn.clicked.connect(self.open_result_center)
+        layout.addWidget(self.result_center_btn)
+
         return group
 
     def _build_ops_tools_group(self) -> QGroupBox:
         group = QGroupBox("常用运维工具")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(8)
+        layout = QGridLayout(group)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(8)
 
         self.ping_excel_btn = QPushButton("📡  批量 Ping")
         self.ping_excel_btn.setObjectName("btn_outline")
-        self.ping_excel_btn.setToolTip("使用上方已导入到设备列表的 IP 执行批量 Ping，结果显示在右侧日志窗口")
+        self.ping_excel_btn.setToolTip(
+            "使用设备列表、手工地址或 CIDR 网段执行批量 Ping，"
+            "结果显示在右侧日志窗口"
+        )
         self.ping_excel_btn.clicked.connect(self.batch_ping_devices)
-        layout.addWidget(self.ping_excel_btn)
+
+        self.port_check_btn = QPushButton("🔌  端口检测")
+        self.port_check_btn.setObjectName("btn_outline")
+        self.port_check_btn.setToolTip("批量检测指定 TCP 端口，不发送应用数据")
+        self.port_check_btn.clicked.connect(self.start_port_check)
+
+        self.ssh_test_btn = QPushButton("🔐  SSH 登录测试")
+        self.ssh_test_btn.setObjectName("btn_outline")
+        self.ssh_test_btn.setToolTip("仅验证 SSH 认证，不执行任何设备命令")
+        self.ssh_test_btn.clicked.connect(self.start_ssh_login_test)
+
+        self.traceroute_btn = QPushButton("🧭  路由跟踪")
+        self.traceroute_btn.setObjectName("btn_outline")
+        self.traceroute_btn.setToolTip("批量执行系统 Traceroute/Tracert")
+        self.traceroute_btn.clicked.connect(self.start_traceroute)
+
+        self.config_diff_btn = QPushButton("⇄  配置对比")
+        self.config_diff_btn.setObjectName("btn_outline")
+        self.config_diff_btn.setToolTip("比较两份本地配置文件的差异")
+        self.config_diff_btn.clicked.connect(self.show_config_diff)
+
+        self.config_backup_btn = QPushButton("💾  配置备份")
+        self.config_backup_btn.setObjectName("btn_outline")
+        self.config_backup_btn.setToolTip(
+            "按设备建立目录，保存版本化 CFG 配置和 JSON 元数据"
+        )
+        self.config_backup_btn.clicked.connect(self.start_config_backup)
+
+        self.subnet_calc_btn = QPushButton("▦  子网计算")
+        self.subnet_calc_btn.setObjectName("btn_outline")
+        self.subnet_calc_btn.setToolTip("计算 IPv4/IPv6 网络范围和地址数量")
+        self.subnet_calc_btn.clicked.connect(self.show_subnet_calculator)
+
+        self.serial_console_btn = QPushButton("⌁  串口控制台")
+        self.serial_console_btn.setObjectName("btn_outline")
+        self.serial_console_btn.setToolTip("通过 Windows COM 串口连接交换机 Console")
+        self.serial_console_btn.clicked.connect(self.show_serial_console)
+
+        self.ssh_console_btn = QPushButton("⌨  SSH 交互终端")
+        self.ssh_console_btn.setObjectName("btn_outline")
+        self.ssh_console_btn.setToolTip("从设备列表选择一台设备并打开交互式 SSH 会话")
+        self.ssh_console_btn.clicked.connect(self.show_ssh_console)
+
+        self.file_transfer_btn = QPushButton("⇅  文件传输服务")
+        self.file_transfer_btn.setObjectName("btn_outline")
+        self.file_transfer_btn.setToolTip(
+            "临时启动 FTP 或 TFTP 服务，与交换机上传、下载文件"
+        )
+        self.file_transfer_btn.clicked.connect(self.show_file_transfer)
+
+        self.packet_capture_btn = QPushButton("◉  网络抓包")
+        self.packet_capture_btn.setObjectName("btn_outline")
+        self.packet_capture_btn.setToolTip(
+            "调用 Wireshark Dumpcap 抓取本机网卡可见流量并保存为 pcapng"
+        )
+        self.packet_capture_btn.clicked.connect(self.show_packet_capture)
+
+        self.health_check_btn = QPushButton("▣  一键设备巡检")
+        self.health_check_btn.setObjectName("btn_outline")
+        self.health_check_btn.setToolTip(
+            "只读采集 H3C/Comware、Huawei VRP 的 CPU、内存、温度、"
+            "风扇、电源和接口摘要"
+        )
+        self.health_check_btn.clicked.connect(self.start_health_check)
+
+        self.terminal_locate_btn = QPushButton("⌖  IP/MAC 终端定位")
+        self.terminal_locate_btn.setObjectName("btn_outline")
+        self.terminal_locate_btn.setToolTip(
+            "通过 H3C/Comware、Huawei VRP 的 ARP 表和 MAC 地址表定位终端接口"
+        )
+        self.terminal_locate_btn.clicked.connect(self.start_terminal_locate)
+
+        self.interface_diag_btn = QPushButton("≋  接口综合诊断")
+        self.interface_diag_btn.setObjectName("btn_outline")
+        self.interface_diag_btn.setToolTip(
+            "只读检查 H3C/Comware、Huawei VRP 接口状态、速率、双工、"
+            "VLAN 和光模块信息"
+        )
+        self.interface_diag_btn.clicked.connect(self.start_interface_diagnosis)
+
+        self._maintenance_buttons = [
+            self.port_check_btn,
+            self.ssh_test_btn,
+            self.traceroute_btn,
+            self.config_backup_btn,
+            self.health_check_btn,
+            self.terminal_locate_btn,
+            self.interface_diag_btn,
+        ]
+
+        self._ops_tools_layout = layout
+        self._ops_tool_buttons = [
+            self.serial_console_btn,
+            self.ssh_console_btn,
+            self.file_transfer_btn,
+            self.packet_capture_btn,
+            self.health_check_btn,
+            self.terminal_locate_btn,
+            self.interface_diag_btn,
+            self.ping_excel_btn,
+            self.port_check_btn,
+            self.ssh_test_btn,
+            self.traceroute_btn,
+            self.config_diff_btn,
+            self.config_backup_btn,
+            self.subnet_calc_btn,
+        ]
+        self._ops_tools_columns = 1
+        for row, button in enumerate(self._ops_tool_buttons):
+            layout.addWidget(button, row, 0)
+        layout.setColumnStretch(0, 1)
+        layout.setColumnStretch(1, 0)
 
         return group
+
+    def show_serial_console(self):
+        if self._serial_console is None:
+            self._serial_console = SerialConsoleDialog(self)
+            self._serial_console.setAttribute(Qt.WA_DeleteOnClose)
+            self._serial_console.destroyed.connect(
+                lambda: setattr(self, "_serial_console", None)
+            )
+        self._serial_console.show()
+        self._serial_console.raise_()
+        self._serial_console.activateWindow()
+
+    def show_ssh_console(self):
+        devices = list(self.device_manager.devices)
+        if self._ssh_console is None:
+            self._ssh_console = SSHConsoleDialog(devices, self)
+            self._ssh_console.setAttribute(Qt.WA_DeleteOnClose)
+            self._ssh_console.destroyed.connect(
+                lambda: setattr(self, "_ssh_console", None)
+            )
+        else:
+            self._ssh_console.set_devices(devices)
+        self._ssh_console.show()
+        self._ssh_console.raise_()
+        self._ssh_console.activateWindow()
+
+    def show_file_transfer(self):
+        if self._file_transfer_dialog is None:
+            self._file_transfer_dialog = FileTransferDialog(self)
+            self._file_transfer_dialog.setAttribute(Qt.WA_DeleteOnClose)
+            self._file_transfer_dialog.destroyed.connect(
+                lambda: setattr(self, "_file_transfer_dialog", None)
+            )
+        self._file_transfer_dialog.show()
+        self._file_transfer_dialog.raise_()
+        self._file_transfer_dialog.activateWindow()
+
+    def show_packet_capture(self):
+        if self._packet_capture_dialog is None:
+            self._packet_capture_dialog = PacketCaptureDialog(self)
+            self._packet_capture_dialog.setAttribute(Qt.WA_DeleteOnClose)
+            self._packet_capture_dialog.destroyed.connect(
+                lambda: setattr(self, "_packet_capture_dialog", None)
+            )
+        self._packet_capture_dialog.show()
+        self._packet_capture_dialog.raise_()
+        self._packet_capture_dialog.activateWindow()
 
     def _build_config_templates_group(self) -> QGroupBox:
         group = QGroupBox("常用配置模板")
@@ -1222,13 +1970,21 @@ class MainWindow(QMainWindow):
         self.config_template_list.itemDoubleClicked.connect(self.open_config_template)
         layout.addWidget(self.config_template_list)
 
+        self.use_template_btn = QPushButton("▶  调用选中模板")
+        self.use_template_btn.setObjectName("btn_primary")
+        self.use_template_btn.setToolTip("将选中模板设为当前统一业务命令文件")
+        self.use_template_btn.clicked.connect(self.use_config_template)
+        layout.addWidget(self.use_template_btn)
+
         btn_row = QHBoxLayout()
         self.add_template_btn = QPushButton("＋  添加模板")
         self.add_template_btn.setObjectName("btn_outline")
+        self.add_template_btn.setToolTip("批量添加自己的配置模板")
         self.add_template_btn.clicked.connect(self.add_config_template)
 
         self.remove_template_btn = QPushButton("✂  移除选中")
         self.remove_template_btn.setObjectName("btn_neutral")
+        self.remove_template_btn.setToolTip("仅自定义模板可以从列表中移除")
         self.remove_template_btn.clicked.connect(self.remove_config_template)
 
         btn_row.addWidget(self.add_template_btn)
@@ -1240,27 +1996,56 @@ class MainWindow(QMainWindow):
     # ── 右侧面板 ─────────────────────────────────────────
     def create_right_panel(self) -> QWidget:
         panel = QWidget()
+        panel.setObjectName("right_workspace")
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
         # 设备列表
         list_group = QGroupBox("设备列表")
+        list_group.setObjectName("device_list_group")
         list_layout = QVBoxLayout(list_group)
         list_layout.setContentsMargins(8, 16, 8, 8)
 
+        filter_row = QHBoxLayout()
+        self.device_search_input = QLineEdit()
+        self.device_search_input.setPlaceholderText("搜索名称、IP、品牌或标签")
+        self.device_search_input.setClearButtonEnabled(True)
+        self.device_search_input.textChanged.connect(self.apply_device_filters)
+        self.group_filter_combo = QComboBox()
+        self.group_filter_combo.addItem("全部分组", "")
+        self.group_filter_combo.currentIndexChanged.connect(
+            self.apply_device_filters
+        )
+        self.execution_scope_combo = QComboBox()
+        self.execution_scope_combo.addItem("执行全部设备", "all")
+        self.execution_scope_combo.addItem("执行筛选结果", "filtered")
+        self.execution_scope_combo.addItem("执行选中设备", "selected")
+        filter_row.addWidget(self.device_search_input, 1)
+        filter_row.addWidget(self.group_filter_combo)
+        filter_row.addWidget(self.execution_scope_combo)
+        list_layout.addLayout(filter_row)
+
         self.device_table = QTableWidget()
-        self.device_table.setColumnCount(8)
+        self.device_table.setColumnCount(10)
         self.device_table.setHorizontalHeaderLabels(
-            ["设备名称", "品牌", "型号", "IP 地址", "IP 版本", "端口", "用户名", "状态"]
+            [
+                "设备名称", "分组", "标签", "品牌", "型号",
+                "IP 地址", "IP 版本", "端口", "用户名", "状态",
+            ]
         )
         self.device_table.setAlternatingRowColors(True)
         self.device_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.device_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.device_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.device_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.device_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.device_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        table_header = self.device_table.horizontalHeader()
+        table_header.setSectionResizeMode(QHeaderView.Interactive)
+        table_header.setMinimumSectionSize(64)
+        table_header.setStretchLastSection(True)
+        for column, width in enumerate(
+            (130, 100, 120, 82, 180, 180, 90, 68, 110, 116)
+        ):
+            table_header.resizeSection(column, width)
+        self.device_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.device_table.verticalHeader().setDefaultSectionSize(38)
         self.device_table.setShowGrid(False)
         list_layout.addWidget(self.device_table)
@@ -1268,13 +2053,16 @@ class MainWindow(QMainWindow):
 
         # 日志
         log_group = QGroupBox("连接日志")
+        log_group.setObjectName("connection_log_group")
         log_layout = QVBoxLayout(log_group)
         log_layout.setContentsMargins(8, 16, 8, 8)
 
         # 日志工具栏
         log_toolbar = QHBoxLayout()
         self._log_title_label = QLabel("实时输出")
-        self._log_title_label.setStyleSheet(f"color: {Theme.TEXT_HINT}; font-size: 15px;")
+        self._log_title_label.setStyleSheet(
+            f"color: {Theme.TEXT_SECONDARY}; font-size: 15px; background: transparent;"
+        )
         log_toolbar.addWidget(self._log_title_label)
         log_toolbar.addStretch()
         log_layout.addLayout(log_toolbar)
@@ -1288,6 +2076,23 @@ class MainWindow(QMainWindow):
         return panel
 
     # ── 业务逻辑 ─────────────────────────────────────────
+    def _update_auth_fields(self):
+        use_key = self.auth_method_combo.currentData() == "key"
+        self.password_label.setVisible(not use_key)
+        self.password_input.setVisible(not use_key)
+        self.private_key_label.setVisible(use_key)
+        self.private_key_row.setVisible(use_key)
+        self.key_passphrase_label.setVisible(use_key)
+        self.key_passphrase_input.setVisible(use_key)
+
+    def browse_private_key(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择 SSH 私钥", "",
+            "SSH 私钥 (*.pem *.key *.ppk id_*);;所有文件 (*)",
+        )
+        if file_path:
+            self.private_key_input.setText(file_path)
+
     def add_device(self):
         brand    = self.brand_combo.currentText()
         ip       = self.ip_input.text().strip()
@@ -1295,6 +2100,12 @@ class MainWindow(QMainWindow):
         username = self.username_input.text().strip()
         password = self.password_input.text().strip()
         name     = self.name_input.text().strip()
+        group = self.group_input.text().strip()
+        tags = self.tags_input.text().strip()
+        auth_method = self.auth_method_combo.currentData()
+        private_key_path = self.private_key_input.text().strip()
+        private_key_passphrase = self.key_passphrase_input.text()
+        host_key_policy = self.host_key_policy_combo.currentData()
 
         if not ip:
             self._warn("请输入 IP 地址")
@@ -1307,11 +2118,23 @@ class MainWindow(QMainWindow):
         if not username:
             self._warn("请输入用户名")
             return
-        if not password:
+        if auth_method == "password" and not password:
             self._warn("请输入密码")
             return
+        if auth_method == "key" and not private_key_path:
+            self._warn("请选择 SSH 私钥文件")
+            return
+        if auth_method == "key" and not os.path.isfile(private_key_path):
+            self._warn("SSH 私钥文件不存在")
+            return
 
-        device = DeviceInfo(brand, ip, port, username, password, name)
+        device = DeviceInfo(
+            brand, ip, port, username, password, name,
+            group=group, tags=tags, auth_method=auth_method,
+            private_key_path=private_key_path,
+            private_key_passphrase=private_key_passphrase,
+            host_key_policy=host_key_policy,
+        )
         if not self.device_manager.add_device(device):
             self._warn(f"设备已存在，已跳过: {ip}:{port}")
             return
@@ -1321,6 +2144,10 @@ class MainWindow(QMainWindow):
         self.username_input.clear()
         self.password_input.clear()
         self.name_input.clear()
+        self.group_input.clear()
+        self.tags_input.clear()
+        self.private_key_input.clear()
+        self.key_passphrase_input.clear()
 
         display = name or ip
         self._log_info(f"[添加]  {display}")
@@ -1337,18 +2164,76 @@ class MainWindow(QMainWindow):
             version_text = "IPv6" if ip_version == 6 else "IPv4" if ip_version == 4 else "未知"
 
             self.device_table.setItem(i, 0, QTableWidgetItem(device.name))
-            self.device_table.setItem(i, 1, QTableWidgetItem(device.brand))
-            self.device_table.setItem(i, 2, QTableWidgetItem(""))          # 型号列，连接后更新
-            self.device_table.setItem(i, 3, QTableWidgetItem(display_ip))
-            self.device_table.setItem(i, 4, QTableWidgetItem(version_text))
-            self.device_table.setItem(i, 5, QTableWidgetItem(str(device.port)))
-            self.device_table.setItem(i, 6, QTableWidgetItem(device.username))
+            self.device_table.setItem(i, 1, QTableWidgetItem(device.group))
+            self.device_table.setItem(i, 2, QTableWidgetItem(device.tags))
+            self.device_table.setItem(i, 3, QTableWidgetItem(device.brand))
+            self.device_table.setItem(i, 4, QTableWidgetItem(""))
+            self.device_table.setItem(i, 5, QTableWidgetItem(display_ip))
+            self.device_table.setItem(i, 6, QTableWidgetItem(version_text))
+            self.device_table.setItem(i, 7, QTableWidgetItem(str(device.port)))
+            self.device_table.setItem(i, 8, QTableWidgetItem(device.username))
 
             # 建议4：状态列使用 StatusBadge cell widget，充分利用颜色语义
-            badge = StatusBadge("待连接")
-            self.device_table.setCellWidget(i, 7, badge)
+            badge = StatusBadge(
+                "待连接",
+                font_px=getattr(self, "_status_badge_font_px", 14),
+            )
+            self.device_table.setCellWidget(i, 9, badge)
 
+        self._refresh_group_filter()
+        self.apply_device_filters()
         self._update_device_count()
+
+    def _refresh_group_filter(self):
+        current = self.group_filter_combo.currentData()
+        groups = sorted({
+            device.group for device in self.device_manager.get_devices()
+            if device.group
+        })
+        self.group_filter_combo.blockSignals(True)
+        self.group_filter_combo.clear()
+        self.group_filter_combo.addItem("全部分组", "")
+        for group in groups:
+            self.group_filter_combo.addItem(group, group)
+        index = self.group_filter_combo.findData(current)
+        self.group_filter_combo.setCurrentIndex(max(0, index))
+        self.group_filter_combo.blockSignals(False)
+
+    def apply_device_filters(self):
+        if not hasattr(self, "device_table"):
+            return
+        query = self.device_search_input.text().strip().lower()
+        group = self.group_filter_combo.currentData() or ""
+        devices = self.device_manager.get_devices()
+        for row, device in enumerate(devices):
+            haystack = " ".join([
+                device.name, device.ip, device.brand, device.group, device.tags,
+                device.username,
+            ]).lower()
+            visible = (not query or query in haystack) and (
+                not group or device.group == group
+            )
+            self.device_table.setRowHidden(row, not visible)
+
+    def _get_execution_devices(self):
+        devices = self.device_manager.get_devices()
+        scope = self.execution_scope_combo.currentData()
+        if scope == "filtered":
+            return [
+                device for row, device in enumerate(devices)
+                if not self.device_table.isRowHidden(row)
+            ]
+        if scope == "selected":
+            rows = sorted({index.row() for index in self.device_table.selectedIndexes()})
+            return [devices[row] for row in rows if 0 <= row < len(devices)]
+        return list(devices)
+
+    def open_result_center(self):
+        results = self.execution_results
+        if not results and self.ssh_manager:
+            results = self.ssh_manager.get_results()
+        dialog = ResultCenterDialog(results, self)
+        dialog.exec_()
 
     def import_excel(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -1357,7 +2242,35 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
 
-        success_count, error_count, errors = self.device_manager.import_from_excel(file_path)
+        try:
+            password_mode = self.device_manager.inspect_excel_password_mode(file_path)
+        except Exception as e:
+            QMessageBox.critical(self, "导入失败", f"无法读取 Excel 文件：\n{e}")
+            return
+
+        master_password = ""
+        if password_mode in ("encrypted", "mixed"):
+            master_password, accepted = QInputDialog.getText(
+                self, "解密认证信息", "请输入该 Excel 的主密码：", QLineEdit.Password
+            )
+            if not accepted:
+                return
+            if not master_password:
+                QMessageBox.warning(self, "主密码", "主密码不能为空")
+                return
+        elif password_mode == "plain":
+            answer = QMessageBox.warning(
+                self, "明文认证信息警告",
+                "检测到 Excel 中保存了明文密码或私钥口令。"
+                "建议先使用“加密 Excel 认证信息”生成加密副本。\n\n仍要继续导入吗？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+
+        success_count, error_count, errors = self.device_manager.import_from_excel(
+            file_path, master_password=master_password
+        )
         skipped_count = getattr(self.device_manager, 'last_import_skipped_count', 0)
         skipped = getattr(self.device_manager, 'last_import_skipped', [])
         self.update_device_table()
@@ -1396,10 +2309,12 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.critical(self, "错误", "模板创建失败")
 
-    def _current_device_ips(self) -> List[str]:
+    def _current_device_ips(self, devices=None) -> List[str]:
         ips = []
         seen = set()
-        for device in self.device_manager.get_devices():
+        for device in (
+            self.device_manager.get_devices() if devices is None else devices
+        ):
             ip = str(getattr(device, "ip", "") or "").strip()
             if not ip:
                 continue
@@ -1414,15 +2329,21 @@ class MainWindow(QMainWindow):
         if self.ping_worker and self.ping_worker.isRunning():
             self._warn("批量 Ping 正在执行，请等待当前任务完成")
             return
-
-        ips = self._current_device_ips()
-        if not ips:
-            QMessageBox.warning(self, "批量 Ping", "设备列表为空，请先使用上方“导入 Excel 文件”导入设备")
+        if self.maintenance_worker and self.maintenance_worker.isRunning():
+            self._warn("另一项批量运维任务正在执行，请等待当前任务完成")
             return
+
+        devices = self._select_maintenance_targets("ping")
+        if not devices:
+            return
+        ips = self._current_device_ips(devices)
 
         self.log_text.clear()
         self._ping_log_lines = []
-        self._record_ping_log(f"[批量 Ping] 使用当前设备列表，共 {len(ips)} 个 IP")
+        self._record_ping_log(
+            f"[批量 Ping] 使用设备列表、手工地址或网段目标，"
+            f"共 {len(ips)} 个地址"
+        )
 
         self.ping_excel_btn.setEnabled(False)
         self._show_progress()
@@ -1448,6 +2369,480 @@ class MainWindow(QMainWindow):
         self._set_status(f"Ping 完成: {success} 成功 / {failure} 失败")
         self.logger.log_operation(f"批量 Ping 完成: 总数={total}, 成功={success}, 失败={failure}")
         QTimer.singleShot(3000, self._update_device_count)
+
+    def _maintenance_devices(self) -> List:
+        devices = self.device_manager.get_devices()
+        if not devices:
+            QMessageBox.warning(self, "常用运维工具", "设备列表为空，请先导入或添加设备")
+            return []
+        return devices
+
+    def _select_maintenance_targets(self, mode: str) -> List:
+        dialog = MaintenanceTargetDialog(
+            mode,
+            self.device_manager.get_devices(),
+            self,
+        )
+        if dialog.exec_() != QDialog.Accepted:
+            return []
+        return dialog.selected_devices()
+
+    def _start_maintenance_task(self, mode: str, options=None, devices=None):
+        if self.maintenance_worker and self.maintenance_worker.isRunning():
+            self._warn("另一项批量运维任务正在执行，请等待当前任务完成")
+            return
+        if self.ping_worker and self.ping_worker.isRunning():
+            self._warn("批量 Ping 正在执行，请等待当前任务完成")
+            return
+
+        devices = list(devices) if devices is not None else (
+            self._maintenance_devices()
+        )
+        if not devices:
+            return
+
+        labels = {
+            "port": "批量端口检测",
+            "ssh_login": "批量 SSH 登录测试",
+            "traceroute": "批量路由跟踪",
+            "backup": "批量配置备份",
+        }
+        label = labels[mode]
+        self._maintenance_log_lines = []
+        self.log_text.clear()
+        self._record_maintenance_log(f"[{label}] 开始，共 {len(devices)} 台设备")
+        self._set_maintenance_running(True)
+        self._show_progress()
+        self.progress_bar.setRange(0, 0)
+        self._set_status(f"{label}正在执行...")
+
+        self.maintenance_worker = MaintenanceWorker(
+            mode,
+            devices,
+            options=options,
+            logger=self.logger,
+        )
+        self.maintenance_worker.progress_signal.connect(self._record_maintenance_log)
+        self.maintenance_worker.finished_signal.connect(self._maintenance_task_finished)
+        self.maintenance_worker.start()
+
+    def _start_diagnostics_task(self, mode: str, devices, options=None):
+        if self.diagnostics_worker and self.diagnostics_worker.isRunning():
+            self._warn("另一项设备诊断正在执行，请等待当前任务完成")
+            return
+        if self.maintenance_worker and self.maintenance_worker.isRunning():
+            self._warn("另一项批量运维任务正在执行，请等待当前任务完成")
+            return
+        if self.ping_worker and self.ping_worker.isRunning():
+            self._warn("批量 Ping 正在执行，请等待当前任务完成")
+            return
+
+        labels = {
+            "health_check": "一键设备巡检",
+            "terminal_locate": "IP/MAC 终端定位",
+            "interface_diagnosis": "接口综合诊断",
+        }
+        label = labels[mode]
+        self._maintenance_log_lines = []
+        self.log_text.clear()
+        self._record_maintenance_log(
+            f"[{label}] 开始，共 {len(devices)} 台设备；"
+            "当前支持 H3C/Comware 和 Huawei VRP"
+        )
+        self._set_maintenance_running(True)
+        self._show_progress()
+        self.progress_bar.setRange(0, 0)
+        self._set_status(f"{label}正在执行...")
+
+        self.diagnostics_worker = DeviceDiagnosticsWorker(
+            mode,
+            devices,
+            options=options,
+            logger=self.logger,
+        )
+        self.diagnostics_worker.progress_signal.connect(
+            self._record_maintenance_log
+        )
+        self.diagnostics_worker.finished_signal.connect(
+            self._diagnostics_task_finished
+        )
+        self.diagnostics_worker.start()
+
+    def _diagnostics_task_finished(self, mode: str, results):
+        labels = {
+            "health_check": ("一键设备巡检", "health_check"),
+            "terminal_locate": ("IP_MAC终端定位", "terminal_locate"),
+            "interface_diagnosis": ("接口综合诊断", "interface_diagnosis"),
+        }
+        label, prefix = labels.get(mode, ("设备诊断", "diagnostics"))
+        results = list(results or [])
+        success = sum(bool(item.get("task_success")) for item in results)
+        failure = len(results) - success
+        self._record_maintenance_log(
+            f"[{label}完成] 设备: {len(results)}，成功: {success}，"
+            f"未找到或失败: {failure}"
+        )
+        log_path = self._save_maintenance_log(prefix)
+        if log_path:
+            self._log_info(f"[{label}] 日志文件已生成: {log_path}")
+
+        self.execution_results = results
+        self._set_maintenance_running(False)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(100)
+        QTimer.singleShot(800, self._hide_progress)
+        self._set_status(f"{label}完成: {success} 成功 / {failure} 未找到或失败")
+        self.logger.log_operation(
+            f"{label}完成: 设备={len(results)}, 成功={success}, "
+            f"未找到或失败={failure}"
+        )
+        dialog = ResultCenterDialog(results, self)
+        dialog.exec_()
+
+    def _set_maintenance_running(self, running: bool):
+        self.ping_excel_btn.setEnabled(not running)
+        for button in self._maintenance_buttons:
+            button.setEnabled(not running)
+
+    def _record_maintenance_log(self, text: str):
+        timestamped = f"[{self._ts()}] {text}"
+        self._maintenance_log_lines.append(timestamped)
+        self._log_append(text)
+
+    def _maintenance_task_finished(
+        self,
+        mode: str,
+        total: int,
+        success: int,
+        failure: int,
+    ):
+        labels = {
+            "port": ("端口检测", "port"),
+            "ssh_login": ("SSH 登录测试", "ssh_login"),
+            "traceroute": ("路由跟踪", "traceroute"),
+            "backup": ("配置备份", "config_backup"),
+        }
+        label, prefix = labels.get(mode, ("运维任务", "maintenance"))
+        self._record_maintenance_log(
+            f"[{label}完成] 总任务: {total}，成功: {success}，失败: {failure}"
+        )
+        log_path = self._save_maintenance_log(prefix)
+        if log_path:
+            self._log_info(f"[{label}] 日志文件已生成: {log_path}")
+
+        self._set_maintenance_running(False)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(100)
+        QTimer.singleShot(800, self._hide_progress)
+        self._set_status(f"{label}完成: {success} 成功 / {failure} 失败")
+        self.logger.log_operation(
+            f"{label}完成: 总任务={total}, 成功={success}, 失败={failure}"
+        )
+        QTimer.singleShot(3000, self._update_device_count)
+
+    def _save_maintenance_log(self, prefix: str) -> str:
+        try:
+            log_dir = os.path.abspath(self.logger.log_dir)
+            os.makedirs(log_dir, exist_ok=True)
+            base_name = f"{prefix}{datetime.now().strftime('%Y%m%d%H%M')}"
+            log_path = os.path.join(log_dir, f"{base_name}.log")
+            counter = 1
+            while os.path.exists(log_path):
+                log_path = os.path.join(log_dir, f"{base_name}_{counter}.log")
+                counter += 1
+            write_lines(log_path, self._maintenance_log_lines)
+            return log_path
+        except OSError as exc:
+            self._log_append(f"[运维工具] 日志文件生成失败: {exc}")
+            return ""
+
+    def start_health_check(self):
+        devices = self._select_maintenance_targets("health_check")
+        if not devices:
+            return
+        profile_dialog = HealthProfileDialog(self)
+        if profile_dialog.exec_() != QDialog.Accepted:
+            return
+        options = profile_dialog.selected_options()
+        builtin_count = len(options.get("builtin_items", []))
+        custom_count = sum(
+            len(commands)
+            for commands in options.get("custom_commands", {}).values()
+        )
+        if not self._confirm_action(
+            "确认一键设备巡检",
+            f"将连接 {len(devices)} 台设备并执行只读巡检命令。\n\n"
+            f"方案：{options.get('profile_name') or '未命名'}\n"
+            f"内置项目：{builtin_count} 项；品牌自定义命令：{custom_count} 条。\n\n"
+            "当前版本对 H3C/Comware 和 Huawei VRP 使用各自明确的命令；"
+            "检测到其他品牌时会停止，不会尝试发送未经验证的命令。\n\n"
+            "自定义命令只保留原始输出，不参与自动健康判定。",
+        ):
+            return
+        self._start_diagnostics_task("health_check", devices, options)
+
+    def start_terminal_locate(self):
+        devices = self._select_maintenance_targets("terminal_locate")
+        if not devices:
+            return
+        value, accepted = QInputDialog.getText(
+            self,
+            "IP/MAC 终端定位",
+            "请输入需要定位的 IPv4 地址或 MAC 地址：",
+        )
+        if not accepted:
+            return
+        try:
+            target_type, target = normalize_lookup_target(value)
+        except ValueError as exc:
+            QMessageBox.warning(self, "目标格式错误", str(exc))
+            return
+        self._start_diagnostics_task(
+            "terminal_locate",
+            devices,
+            {"target_type": target_type, "target": target},
+        )
+
+    def start_interface_diagnosis(self):
+        devices = self._select_maintenance_targets("interface_diagnosis")
+        if not devices:
+            return
+        value, accepted = QInputDialog.getText(
+            self,
+            "接口综合诊断",
+            "请输入需要检查的 H3C 接口名称：",
+            text="GigabitEthernet1/0/1",
+        )
+        if not accepted:
+            return
+        try:
+            interface = validate_interface_name(value)
+        except ValueError as exc:
+            QMessageBox.warning(self, "接口格式错误", str(exc))
+            return
+        self._start_diagnostics_task(
+            "interface_diagnosis",
+            devices,
+            {"interface": interface},
+        )
+
+    def start_port_check(self):
+        devices = self._select_maintenance_targets("port")
+        if not devices:
+            return
+        value, accepted = QInputDialog.getText(
+            self,
+            "批量端口检测",
+            "请输入 TCP 端口，使用逗号分隔：",
+            text="22,23,80,443",
+        )
+        if not accepted:
+            return
+        try:
+            ports = parse_tcp_ports(value)
+        except ValueError as exc:
+            QMessageBox.warning(self, "端口输入错误", str(exc))
+            return
+        self._start_maintenance_task(
+            "port",
+            {"ports": ports},
+            devices=devices,
+        )
+
+    def start_ssh_login_test(self):
+        devices = self._select_maintenance_targets("ssh_login")
+        if not devices:
+            return
+        if not self._confirm_action(
+            "确认 SSH 登录测试",
+            f"将验证 {len(devices)} 台已选择或手工输入的设备。\n\n"
+            "设备列表中的目标使用各自凭据，手工目标使用刚才填写的凭据。\n\n"
+            "测试只进行 SSH 认证，不执行设备命令。请确认密码正确，"
+            "避免连续认证失败触发设备账号锁定。",
+        ):
+            return
+        self._start_maintenance_task("ssh_login", devices=devices)
+
+    def start_traceroute(self):
+        devices = self._select_maintenance_targets("traceroute")
+        if not devices:
+            return
+        self._start_maintenance_task("traceroute", devices=devices)
+
+    def start_config_backup(self):
+        devices = self.device_manager.get_devices()
+        if not devices:
+            QMessageBox.warning(self, "配置备份", "设备列表为空，请先导入或添加设备")
+            return
+        output_dir = QFileDialog.getExistingDirectory(self, "选择配置备份目录", "")
+        if not output_dir:
+            return
+        if not self._confirm_action(
+            "确认配置备份",
+            f"将连接 {len(devices)} 台设备并执行只读的当前配置查询命令。\n\n"
+            f"备份根目录：{output_dir}\n\n"
+            "每台设备将建立独立目录，并保存 CFG 配置正文和 JSON 元数据。\n"
+            "程序会显示实际查询命令；无法获得有效配置时不会生成备份文件。",
+        ):
+            return
+        self._start_maintenance_task("backup", {"output_dir": output_dir})
+
+    def show_config_diff(self):
+        first_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择第一份配置",
+            "",
+            "配置文件 (*.txt *.cfg *.conf *.log);;所有文件 (*.*)",
+        )
+        if not first_path:
+            return
+        second_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择第二份配置",
+            os.path.dirname(first_path),
+            "配置文件 (*.txt *.cfg *.conf *.log);;所有文件 (*.*)",
+        )
+        if not second_path:
+            return
+        try:
+            diff_text = unified_config_diff(first_path, second_path)
+        except (OSError, UnicodeError) as exc:
+            QMessageBox.critical(self, "配置对比失败", str(exc))
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("配置文件对比")
+        dialog.resize(1100, 760)
+        layout = QVBoxLayout(dialog)
+
+        title = QLabel(
+            f"第一份：{first_path}\n第二份：{second_path}\n"
+            "“-”表示第一份独有，“+”表示第二份新增。"
+        )
+        title.setWordWrap(True)
+        layout.addWidget(title)
+
+        viewer = QTextEdit()
+        viewer.setReadOnly(True)
+        viewer.setFont(QFont("Consolas", 13))
+        viewer.setPlainText(diff_text)
+        layout.addWidget(viewer)
+
+        button_row = QHBoxLayout()
+        save_button = QPushButton("💾  保存差异")
+        save_button.setObjectName("btn_outline")
+        close_button = QPushButton("关闭")
+        close_button.setObjectName("btn_neutral")
+        button_row.addStretch()
+        button_row.addWidget(save_button)
+        button_row.addWidget(close_button)
+        layout.addLayout(button_row)
+
+        def save_diff():
+            path, _ = QFileDialog.getSaveFileName(
+                dialog,
+                "保存配置差异",
+                "config_diff.txt",
+                "文本文件 (*.txt)",
+            )
+            if path:
+                try:
+                    write_lines(path, diff_text.splitlines())
+                    self._log_info(f"[配置对比] 差异文件已保存: {path}")
+                except OSError as exc:
+                    QMessageBox.critical(dialog, "保存失败", str(exc))
+
+        save_button.clicked.connect(save_diff)
+        close_button.clicked.connect(dialog.accept)
+        self._log_info(
+            f"[配置对比] 已比较 {os.path.basename(first_path)} 和 "
+            f"{os.path.basename(second_path)}"
+        )
+        dialog.exec_()
+
+    def show_subnet_calculator(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("IPv4 / IPv6 子网计算器")
+        dialog.resize(720, 560)
+        layout = QVBoxLayout(dialog)
+
+        prompt = QLabel("输入带前缀长度的地址")
+        layout.addWidget(prompt)
+        address_input = QLineEdit()
+        address_input.setPlaceholderText("例如：192.168.10.20/24 或 2001:db8::20/64")
+        layout.addWidget(address_input)
+
+        result_view = QTextEdit()
+        result_view.setReadOnly(True)
+        result_view.setFont(QFont("Microsoft YaHei", 13))
+        layout.addWidget(result_view)
+
+        button_row = QHBoxLayout()
+        calculate_button = QPushButton("▦  计算")
+        calculate_button.setObjectName("btn_primary")
+        close_button = QPushButton("关闭")
+        close_button.setObjectName("btn_neutral")
+        button_row.addWidget(calculate_button)
+        button_row.addWidget(close_button)
+        layout.addLayout(button_row)
+
+        def calculate():
+            try:
+                rows = calculate_subnet(address_input.text())
+            except ValueError as exc:
+                QMessageBox.warning(dialog, "地址输入错误", str(exc))
+                return
+            width = max(len(label) for label, _ in rows)
+            result_view.setPlainText(
+                "\n".join(f"{label.ljust(width)} : {value}" for label, value in rows)
+            )
+
+        calculate_button.clicked.connect(calculate)
+        address_input.returnPressed.connect(calculate)
+        close_button.clicked.connect(dialog.accept)
+        address_input.setFocus()
+        dialog.exec_()
+
+    def encrypt_excel_passwords(self):
+        source_path, _ = QFileDialog.getOpenFileName(
+            self, "选择需要加密的 Excel", "", "Excel Files (*.xlsx)"
+        )
+        if not source_path:
+            return
+
+        master_password, accepted = QInputDialog.getText(
+            self, "设置主密码", "请输入主密码（至少 8 个字符）：", QLineEdit.Password
+        )
+        if not accepted:
+            return
+        confirm_password, accepted = QInputDialog.getText(
+            self, "确认主密码", "请再次输入主密码：", QLineEdit.Password
+        )
+        if not accepted:
+            return
+        if master_password != confirm_password:
+            QMessageBox.warning(self, "主密码", "两次输入的主密码不一致")
+            return
+
+        base, _ = os.path.splitext(source_path)
+        target_path, _ = QFileDialog.getSaveFileName(
+            self, "保存加密 Excel", f"{base}_encrypted.xlsx", "Excel Files (*.xlsx)"
+        )
+        if not target_path:
+            return
+        try:
+            count = self.device_manager.encrypt_excel_passwords(
+                source_path, target_path, master_password
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "加密失败", str(e))
+            return
+
+        QMessageBox.information(
+            self, "加密完成",
+            f"已加密 {count} 个设备密码。\n\n文件：{target_path}\n\n请妥善保管主密码，遗失后无法恢复。",
+        )
+        self._log_info(f"[安全]  已生成加密 Excel，共加密 {count} 个设备密码")
 
     def _record_ping_log(self, text: str):
         self._ping_log_lines.append(f"[{self._ts()}] {text}")
@@ -1497,13 +2892,37 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "config_template_list"):
             return
         self.config_template_list.clear()
-        for item in self._config_templates:
+        all_templates = get_builtin_templates() + [
+            {**item, "builtin": False}
+            for item in self._config_templates
+        ]
+        for item in all_templates:
             path = item.get("path", "")
             name = item.get("name") or os.path.basename(path)
-            list_item = QListWidgetItem(name)
-            list_item.setToolTip(path)
-            list_item.setData(Qt.UserRole, path)
+            builtin = bool(item.get("builtin"))
+            prefix = "内置" if builtin else "自定义"
+            list_item = QListWidgetItem(f"{prefix} · {name}")
+            description = item.get("description", "")
+            tooltip = f"{description}\n{path}".strip()
+            list_item.setToolTip(tooltip)
+            list_item.setData(Qt.UserRole, dict(item))
+            if builtin:
+                list_item.setForeground(QColor(Theme.PRIMARY_DARK))
             self.config_template_list.addItem(list_item)
+
+    @staticmethod
+    def _template_item_data(item):
+        if item is None:
+            return {}
+        data = item.data(Qt.UserRole)
+        if isinstance(data, dict):
+            return data
+        # Keep compatibility with list items created by older versions.
+        return {
+            "name": os.path.basename(data) if data else "模板",
+            "path": data or "",
+            "builtin": False,
+        }
 
     def add_config_template(self):
         file_paths, _ = QFileDialog.getOpenFileNames(
@@ -1553,17 +2972,26 @@ class MainWindow(QMainWindow):
             self._warn("请先选择要移除的模板")
             return
         item = self.config_template_list.item(row)
-        name = item.text() if item else "模板"
+        template = self._template_item_data(item)
+        if template.get("builtin"):
+            self._warn("内置模板由程序提供，不能移除")
+            return
+        name = template.get("name") or "模板"
         if not self._confirm_action("确认移除", f"确定要移除配置模板“{name}”吗？\n\n此操作只会从列表移除，不会删除原文件。"):
             return
-        self._config_templates.pop(row)
+        path = os.path.abspath(template.get("path", ""))
+        self._config_templates = [
+            saved for saved in self._config_templates
+            if os.path.abspath(saved.get("path", "")) != path
+        ]
         self._save_config_templates()
         self._refresh_config_template_list()
         self._update_left_content_min_height()
         self._log_info(f"[模板] 已移除配置模板: {name}")
 
     def open_config_template(self, item: QListWidgetItem):
-        file_path = item.data(Qt.UserRole)
+        template = self._template_item_data(item)
+        file_path = template.get("path", "")
         if not file_path or not os.path.exists(file_path):
             QMessageBox.warning(self, "模板不存在", "模板文件不存在，可能已被移动或删除")
             return
@@ -1605,16 +3033,145 @@ class MainWindow(QMainWindow):
         self._log_info(f"[模板] 查看配置模板: {file_path}")
         dialog.exec_()
 
-    def start_connection(self):
-        devices = self.device_manager.get_devices()
-        if not devices:
-            QMessageBox.warning(self, "警告", "请先添加设备")
+    def use_config_template(self):
+        item = self.config_template_list.currentItem()
+        if item is None:
+            self._warn("请先选择要调用的模板")
             return
+
+        template = self._template_item_data(item)
+        file_path = template.get("path", "")
+        name = template.get("name") or os.path.basename(file_path)
+        if not file_path or not os.path.isfile(file_path):
+            QMessageBox.warning(self, "模板不存在", "模板文件不存在，可能已被移动或删除")
+            return
+
+        if template.get("parameterized"):
+            dialog = ConfigTemplateDialog(template, self)
+            if dialog.exec_() != QDialog.Accepted:
+                return
+            rendered = dialog.rendered_template
+            if rendered is None:
+                return
+            single_index = self.cmd_mode_combo.findData("single")
+            if single_index >= 0:
+                self.cmd_mode_combo.setCurrentIndex(single_index)
+            self._command_file = None
+            self._command_directory = None
+            self._command_lines = list(rendered.commands)
+            self._required_template_brand = template.get("brand", "")
+            self._active_template_name = name
+            self._active_template_sensitive = rendered.contains_secrets
+            self._template_secret_values = list(rendered.secret_values)
+            self.cmd_file_label.setText(f"参数模板：{name}")
+            self.cmd_file_label.setToolTip(
+                f"仅适用于 {self._required_template_brand.upper()}；"
+                "参数只保存在当前内存"
+            )
+            self._log_info(
+                f"[模板] 已生成参数化模板: {name}，"
+                f"共 {len(rendered.commands)} 条命令"
+            )
+            self._set_status(f"当前参数模板: {name}")
+            QTimer.singleShot(3000, self._update_device_count)
+            return
+
+        if not self._confirm_action(
+            "调用配置模板",
+            f"确定将“{name}”设为当前业务命令吗？\n\n"
+            "程序不会转换模板命令。调用后仍需点击“开始连接”才会执行，"
+            "请先双击模板核对目标设备是否支持。",
+        ):
+            return
+
+        single_index = self.cmd_mode_combo.findData("single")
+        if single_index >= 0:
+            self.cmd_mode_combo.setCurrentIndex(single_index)
+        self._command_directory = None
+        self._command_file = file_path
+        self._command_lines = None
+        self._required_template_brand = ""
+        self._active_template_name = ""
+        self._active_template_sensitive = False
+        self._template_secret_values = []
+        self.cmd_file_label.setText(f"模板：{name}")
+        self.cmd_file_label.setToolTip(file_path)
+        self._log_info(f"[模板] 已调用配置模板: {name}")
+        self._set_status(f"当前业务命令模板: {name}")
+        QTimer.singleShot(3000, self._update_device_count)
+
+    def start_connection(self):
+        if self.connection_worker and self.connection_worker.isRunning():
+            self.stop_connection()
+            return
+
+        devices = self._get_execution_devices()
+        if not devices:
+            QMessageBox.warning(
+                self, "警告", "当前执行范围内没有设备，请检查筛选条件或表格选中项"
+            )
+            return
+
+        self.ssh_manager = SSHManager(max_connections=5)
+        self.ssh_manager.command_file = self._command_file
+        self.ssh_manager.command_directory = self._command_directory
+        self.ssh_manager.command_lines = (
+            list(self._command_lines) if self._command_lines is not None else None
+        )
+        self.ssh_manager.command_label = self._active_template_name
+        self.ssh_manager.required_brand = self._required_template_brand
+        self.ssh_manager.sensitive_values = list(self._template_secret_values)
+
+        if self._required_template_brand:
+            mismatched = [
+                device
+                for device in devices
+                if str(getattr(device, "brand", "") or "").lower()
+                not in ("", "unknown", self._required_template_brand)
+            ]
+            if mismatched:
+                names = "、".join(
+                    (device.name or device.ip) for device in mismatched[:8]
+                )
+                QMessageBox.warning(
+                    self,
+                    "模板品牌不匹配",
+                    f"当前模板仅适用于 {self._required_template_brand.upper()}，"
+                    f"以下设备品牌不匹配：\n{names}\n\n已阻止执行。",
+                )
+                return
+
+        if self.cmd_mode_combo.currentData() == "per_device":
+            if not self._command_directory or not os.path.isdir(self._command_directory):
+                QMessageBox.warning(self, "脚本目录", "请先选择有效的设备脚本目录")
+                return
+            preview_lines = []
+            missing_count = 0
+            for device in devices:
+                script_path = self.ssh_manager.resolve_command_file(device)
+                if script_path:
+                    preview_lines.append(f"{device.name} ({device.ip})  →  {os.path.basename(script_path)}")
+                else:
+                    preview_lines.append(f"{device.name} ({device.ip})  →  未匹配，将跳过")
+                    missing_count += 1
+            preview = "\n".join(preview_lines[:30])
+            if len(preview_lines) > 30:
+                preview += f"\n... 其余 {len(preview_lines) - 30} 台设备未显示"
+            if missing_count:
+                preview += f"\n\n未匹配设备：{missing_count} 台"
+            answer = QMessageBox.question(
+                self, "确认脚本匹配", preview + "\n\n确认开始执行？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
 
         self._total_count    = len(devices)
         self._connected_count = 0
+        self.execution_results = []
 
-        self.connect_btn.setEnabled(False)
+        self.connect_btn.setEnabled(True)
+        self.connect_btn.setText("■  停止连接")
         self.add_btn.setEnabled(False)
         self.import_btn.setEnabled(False)
         self.delete_btn.setEnabled(False)
@@ -1630,16 +3187,24 @@ class MainWindow(QMainWindow):
         self._set_status(f"连接中... 共 {self._total_count} 台设备")
 
         # 建议1：预置所有设备状态为"连接中"，消除启动到首台完成之间的视觉空白
+        execution_keys = {
+            (device.ip, int(device.port)) for device in devices
+        }
+        all_devices = self.device_manager.get_devices()
         for i in range(self.device_table.rowCount()):
-            badge = self.device_table.cellWidget(i, 7)
+            device = all_devices[i]
+            if (device.ip, int(device.port)) not in execution_keys:
+                continue
+            badge = self.device_table.cellWidget(i, 9)
             if isinstance(badge, StatusBadge):
                 badge.setText("⏳ 连接中")
             else:
-                b = StatusBadge("⏳ 连接中")
-                self.device_table.setCellWidget(i, 7, b)
+                b = StatusBadge(
+                    "⏳ 连接中",
+                    font_px=getattr(self, "_status_badge_font_px", 14),
+                )
+                self.device_table.setCellWidget(i, 9, b)
 
-        self.ssh_manager = SSHManager(max_connections=5)
-        self.ssh_manager.command_file      = self._command_file
         self.ssh_manager.save_after_exec   = self.save_check.isChecked()
         self.ssh_manager.detect_l2_uplink  = self.l2_uplink_check.isChecked()
         self.connection_worker = ConnectionWorker(self.ssh_manager, devices)
@@ -1650,6 +3215,13 @@ class MainWindow(QMainWindow):
         self.connection_worker.result_signal.connect(self.handle_result)
         self.connection_worker.finished_signal.connect(self.connection_finished)
         self.connection_worker.start()
+
+    def stop_connection(self):
+        if self.ssh_manager:
+            self.ssh_manager.stop_connections()
+        self.connect_btn.setEnabled(False)
+        self._log_info("[停止]  正在停止连接任务，已运行的 SSH 会话会被断开")
+        self._set_status("正在停止连接任务...")
 
     def update_progress(self, message: str):
         self._log_append(message)
@@ -1674,7 +3246,7 @@ class MainWindow(QMainWindow):
         """按规范化 IP 在设备表中查找行号，返回 -1 表示未找到"""
         norm_target = self._normalize_ip(raw_ip)
         for i in range(self.device_table.rowCount()):
-            cell = self.device_table.item(i, 3)
+            cell = self.device_table.item(i, 5)
             if cell is None:
                 continue
             norm_cell = self._normalize_ip(cell.text())
@@ -1693,19 +3265,35 @@ class MainWindow(QMainWindow):
             return
 
         # 建议4：通过 StatusBadge cell widget 更新状态
-        badge = self.device_table.cellWidget(row, 7)
+        badge = self.device_table.cellWidget(row, 9)
         if isinstance(badge, StatusBadge):
             badge.setText(status_text)
         else:
-            badge = StatusBadge(status_text)
-            self.device_table.setCellWidget(row, 7, badge)
+            badge = StatusBadge(
+                status_text,
+                font_px=getattr(self, "_status_badge_font_px", 14),
+            )
+            self.device_table.setCellWidget(row, 9, badge)
 
         # 型号列同步更新
         if model:
-            self.device_table.setItem(row, 2, QTableWidgetItem(model))
+            self.device_table.setItem(row, 4, QTableWidgetItem(model))
 
     def handle_result(self, result: dict):
         """全量结果兜底：补充型号列、更新连接计数（逐设备信号已处理状态列）"""
+        device_result = result.get("device_info", {}) or {}
+        result_key = (
+            device_result.get("ip", ""),
+            int(device_result.get("port", 22) or 22),
+        )
+        self.execution_results = [
+            existing for existing in self.execution_results
+            if (
+                (existing.get("device_info", {}) or {}).get("ip", ""),
+                int((existing.get("device_info", {}) or {}).get("port", 22) or 22),
+            ) != result_key
+        ]
+        self.execution_results.append(result)
         device_info    = result.get("device_info", {})
         is_connected   = result.get("is_connected", False)
         error_message  = result.get("error_message", "")
@@ -1719,10 +3307,10 @@ class MainWindow(QMainWindow):
 
         # 型号列兜底（on_device_status 若已写入则此处覆盖为同值，无害）
         if model_detected:
-            self.device_table.setItem(row, 2, QTableWidgetItem(model_detected))
+            self.device_table.setItem(row, 4, QTableWidgetItem(model_detected))
 
         # 状态列兜底（处理 on_device_status 可能未触发的极端情况）
-        badge = self.device_table.cellWidget(row, 7)
+        badge = self.device_table.cellWidget(row, 9)
         if isinstance(badge, StatusBadge):
             current = badge.text()
             # 仅在仍为"连接中"或"待连接"时才执行兜底更新
@@ -1736,6 +3324,7 @@ class MainWindow(QMainWindow):
 
     def connection_finished(self):
         self.connect_btn.setEnabled(True)
+        self.connect_btn.setText("▶  开始连接")
         self.add_btn.setEnabled(True)
         self.import_btn.setEnabled(True)
         self.delete_btn.setEnabled(True)
@@ -1745,6 +3334,9 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(800, self._hide_progress)   # 800ms 后收缩消失
 
         results = self.ssh_manager.get_results() if self.ssh_manager else []
+        if self.ssh_manager and self._active_template_sensitive:
+            self.ssh_manager.command_lines = None
+            self.ssh_manager.sensitive_values = []
         total = len(results) or self._total_count
         success = sum(1 for result in results if result.get("is_connected"))
         failure = max(0, total - success)
@@ -1764,6 +3356,12 @@ class MainWindow(QMainWindow):
             f"  成功率: {rate:.1f}%"
         )
         QMessageBox.information(self, "连接完成", msg)
+        if self._active_template_sensitive:
+            self._clear_parameterized_template(
+                "包含密码的参数模板已在任务结束后从内存清除"
+            )
+            self.cmd_file_label.setText("SSH_command.txt  (默认)")
+            self.cmd_file_label.setToolTip("")
 
     def delete_selected_device(self):
         """移除设备列表中当前选中的行（借鉴 w-sw-ssh 思路，支持精细管理）"""
@@ -1813,12 +3411,26 @@ class MainWindow(QMainWindow):
 
     def browse_command_file(self):
         """选择自定义命令文件"""
+        if self.cmd_mode_combo.currentData() == "per_device":
+            directory = QFileDialog.getExistingDirectory(self, "选择设备脚本目录", "")
+            if not directory:
+                return
+            self._command_directory = directory
+            self._clear_parameterized_template()
+            display = os.path.basename(os.path.normpath(directory)) or directory
+            self.cmd_file_label.setText(display)
+            self.cmd_file_label.setToolTip(directory)
+            self._log_info(f"[命令]  已选择设备脚本目录: {directory}")
+            self._set_status(f"设备脚本目录: {display}")
+            QTimer.singleShot(3000, self._update_device_count)
+            return
         file_path, _ = QFileDialog.getOpenFileName(
             self, "选择命令文件", "", "文本文件 (*.txt);;所有文件 (*.*)"
         )
         if not file_path:
             return
         self._command_file = file_path
+        self._clear_parameterized_template()
         # 只显示文件名，避免路径过长
         display = os.path.basename(file_path)
         self.cmd_file_label.setText(display)
@@ -1830,11 +3442,47 @@ class MainWindow(QMainWindow):
     def reset_command_file(self):
         """恢复使用默认命令文件"""
         self._command_file = None
-        self.cmd_file_label.setText("SSH_command.txt  (默认)")
+        self._command_directory = None
+        self._clear_parameterized_template()
+        if self.cmd_mode_combo.currentData() == "per_device":
+            self.cmd_file_label.setText("请选择设备脚本目录")
+        else:
+            self.cmd_file_label.setText("SSH_command.txt  (默认)")
         self.cmd_file_label.setToolTip("")
         self._log_info("[命令]  已恢复使用默认命令文件 SSH_command.txt")
         self._set_status("命令文件已恢复为默认")
         QTimer.singleShot(3000, self._update_device_count)
+
+    def on_command_mode_changed(self):
+        """Switch the existing command area between one file and per-device matching."""
+        if self._command_lines is not None:
+            self._clear_parameterized_template()
+        per_device = self.cmd_mode_combo.currentData() == "per_device"
+        if per_device:
+            self._command_file = None
+            self.cmd_browse_btn.setText("📁  选择脚本目录")
+            self.cmd_file_label.setText(
+                os.path.basename(os.path.normpath(self._command_directory))
+                if self._command_directory else "请选择设备脚本目录"
+            )
+            self._cmd_tip_label.setText("仅按设备名称匹配：设备名 SW1 → SW1.txt")
+        else:
+            self._command_directory = None
+            self.cmd_browse_btn.setText("📄  选择文件")
+            self.cmd_file_label.setText(
+                os.path.basename(self._command_file) if self._command_file else "SSH_command.txt  (默认)"
+            )
+            self._cmd_tip_label.setText("命令原样发送；每行一条，# 开头为注释")
+        self.cmd_file_label.setToolTip("")
+
+    def _clear_parameterized_template(self, log_message: str = ""):
+        self._command_lines = None
+        self._required_template_brand = ""
+        self._active_template_name = ""
+        self._active_template_sensitive = False
+        self._template_secret_values = []
+        if log_message:
+            self._log_info(f"[模板] {log_message}")
 
     # ── 日志辅助 ─────────────────────────────────────────
     @staticmethod

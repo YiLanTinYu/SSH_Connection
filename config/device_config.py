@@ -16,19 +16,31 @@ from openpyxl import Workbook, load_workbook
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.ipv6_utils import IPv6Utils, IPVersion, IPv6AddressValidator
+from utils.password_crypto import decrypt_password, encrypt_password, is_encrypted_password
 
 
 class DeviceInfo:
     """设备信息类（支持IPv4和IPv6）"""
     
-    def __init__(self, brand: str = '', ip: str = '', port: int = 22, 
-                 username: str = '', password: str = '', name: str = ''):
+    def __init__(self, brand: str = '', ip: str = '', port: int = 22,
+                 username: str = '', password: str = '', name: str = '',
+                 group: str = '', tags: str = '', auth_method: str = 'password',
+                 private_key_path: str = '', private_key_passphrase: str = '',
+                 host_key_policy: str = 'tofu'):
         self.brand = brand
         self.ip = ip
         self.port = port
         self.username = username
         self.password = password
         self.name = name or f"{brand}_{ip}"
+        self.group = str(group or '').strip()
+        self.tags = self._normalize_tags(tags)
+        self.auth_method = (
+            'key' if str(auth_method or '').strip().lower() == 'key' else 'password'
+        )
+        self.private_key_path = str(private_key_path or '').strip()
+        self.private_key_passphrase = str(private_key_passphrase or '')
+        self.host_key_policy = str(host_key_policy or 'tofu').strip().lower()
         
         # IPv6相关属性
         self.ip_version = IPVersion.UNKNOWN
@@ -68,7 +80,19 @@ class DeviceInfo:
         """
         return IPv6Utils.format_ipv6_for_display(self.ip)
     
-    def to_dict(self) -> Dict:
+    @staticmethod
+    def _normalize_tags(tags) -> str:
+        values = tags if isinstance(tags, (list, tuple, set)) else (
+            str(tags or '').replace('，', ',').split(',')
+        )
+        cleaned = []
+        for value in values:
+            tag = str(value or '').strip()
+            if tag and tag not in cleaned:
+                cleaned.append(tag)
+        return ','.join(cleaned)
+
+    def to_dict(self, include_secrets: bool = True) -> Dict:
         """转换为字典"""
         return {
             'name': self.name,
@@ -76,7 +100,15 @@ class DeviceInfo:
             'ip': self.ip,
             'port': self.port,
             'username': self.username,
-            'password': self.password,
+            'password': self.password if include_secrets else '',
+            'group': self.group,
+            'tags': self.tags,
+            'auth_method': self.auth_method,
+            'private_key_path': self.private_key_path,
+            'private_key_passphrase': (
+                self.private_key_passphrase if include_secrets else ''
+            ),
+            'host_key_policy': self.host_key_policy,
             'ip_version': self.ip_version.value if self.ip_version else 0,
             'ip_version_name': 'IPv6' if self.ip_version == IPVersion.IPv6 else 'IPv4' if self.ip_version == IPVersion.IPv4 else 'Unknown',
         }
@@ -91,6 +123,12 @@ class DeviceInfo:
             username=data.get('username', ''),
             password=data.get('password', ''),
             name=data.get('name', ''),
+            group=data.get('group', ''),
+            tags=data.get('tags', ''),
+            auth_method=data.get('auth_method', 'password'),
+            private_key_path=data.get('private_key_path', ''),
+            private_key_passphrase=data.get('private_key_passphrase', ''),
+            host_key_policy=data.get('host_key_policy', 'tofu'),
         )
         
         # 恢复IP版本信息
@@ -142,10 +180,11 @@ class DeviceConfigManager:
         self.devices.append(device)
         return True
     
-    def add_device_manual(self, brand: str, ip: str, port: int = 22, 
-                          username: str = '', password: str = '', name: str = ''):
+    def add_device_manual(self, brand: str, ip: str, port: int = 22,
+                          username: str = '', password: str = '', name: str = '',
+                          **kwargs):
         """手动添加设备"""
-        device = DeviceInfo(brand, ip, port, username, password, name)
+        device = DeviceInfo(brand, ip, port, username, password, name, **kwargs)
         self.add_device(device)
     
     @staticmethod
@@ -171,38 +210,147 @@ class DeviceConfigManager:
             raise ValueError('port must be between 1 and 65535')
         return port
 
-    def import_from_excel(self, file_path: str) -> tuple:
-        """Import devices from Excel with required-field and IP validation."""
+    @classmethod
+    def _device_from_mapping(cls, data: Dict) -> DeviceInfo:
+        """Create a validated DeviceInfo from a JSON-like mapping."""
+        if not isinstance(data, dict):
+            raise ValueError('device item must be an object')
+
+        brand = cls._clean_excel_value(data.get('brand'), 'h3c').lower()
+        ip = cls._clean_excel_value(data.get('ip'))
+        port = cls._clean_excel_port(data.get('port'), 22)
+        username = cls._clean_excel_value(data.get('username'))
+        password = cls._clean_excel_value(data.get('password'))
+        name = cls._clean_excel_value(data.get('name'))
+        group = cls._clean_excel_value(data.get('group'))
+        tags = cls._clean_excel_value(data.get('tags'))
+        auth_method = cls._clean_excel_value(
+            data.get('auth_method'), 'password'
+        ).lower()
+        private_key_path = cls._clean_excel_value(data.get('private_key_path'))
+        private_key_passphrase = cls._clean_excel_value(
+            data.get('private_key_passphrase')
+        )
+        host_key_policy = cls._clean_excel_value(
+            data.get('host_key_policy'), 'tofu'
+        ).lower()
+
+        if not ip:
+            raise ValueError('ip is required')
+        if not username:
+            raise ValueError('username is required')
+        if auth_method not in ('password', 'key'):
+            raise ValueError('auth_method must be password or key')
+        if auth_method == 'password' and not password:
+            raise ValueError('password is required')
+        if auth_method == 'key' and not private_key_path:
+            raise ValueError('private_key_path is required for key authentication')
+
+        device = DeviceInfo(
+            brand, ip, port, username, password, name,
+            group=group, tags=tags, auth_method=auth_method,
+            private_key_path=private_key_path,
+            private_key_passphrase=private_key_passphrase,
+            host_key_policy=host_key_policy,
+        )
+        is_valid, error_msg = device.validate_ip_address()
+        if not is_valid:
+            raise ValueError(f'invalid IP address: {error_msg}')
+        return device
+
+    @staticmethod
+    def inspect_excel_password_mode(file_path: str) -> str:
+        """Return encryption mode for password and private-key passphrase cells."""
+        workbook = load_workbook(file_path, read_only=True, data_only=True)
+        try:
+            sheet = workbook.active
+            rows = sheet.iter_rows(values_only=True)
+            headers = [str(value or '').strip().lower() for value in next(rows, [])]
+            indexes = [
+                headers.index(name)
+                for name in ('password', 'private_key_passphrase')
+                if name in headers
+            ]
+            if not indexes:
+                return 'none'
+            encrypted = plain = False
+            for row in rows:
+                for column in indexes:
+                    value = row[column] if column < len(row) else None
+                    if value is None or str(value).strip() == '':
+                        continue
+                    if is_encrypted_password(str(value)):
+                        encrypted = True
+                    else:
+                        plain = True
+            if encrypted and plain:
+                return 'mixed'
+            if not encrypted and not plain:
+                return 'none'
+            return 'encrypted' if encrypted else 'plain'
+        finally:
+            workbook.close()
+
+    @staticmethod
+    def encrypt_excel_passwords(source_path: str, target_path: str, master_password: str) -> int:
+        """Copy an Excel file while encrypting every non-empty password cell."""
+        if len(master_password or '') < 8:
+            raise ValueError('主密码至少需要 8 个字符')
+        workbook = load_workbook(source_path)
+        try:
+            sheet = workbook.active
+            headers = [str(cell.value or '').strip().lower() for cell in sheet[1]]
+            protected_columns = [
+                headers.index(name) + 1
+                for name in ('password', 'private_key_passphrase')
+                if name in headers
+            ]
+            if not protected_columns:
+                raise ValueError('Excel 缺少 password 或 private_key_passphrase 列')
+            encrypted_count = 0
+            for column in protected_columns:
+                for row in range(2, sheet.max_row + 1):
+                    cell = sheet.cell(row=row, column=column)
+                    value = str(cell.value or '').strip()
+                    if not value or is_encrypted_password(value):
+                        continue
+                    cell.value = encrypt_password(value, master_password)
+                    encrypted_count += 1
+            if encrypted_count == 0:
+                raise ValueError('没有找到可加密的明文密码')
+            workbook.save(target_path)
+            return encrypted_count
+        finally:
+            workbook.close()
+
+    def import_from_excel(self, file_path: str, master_password: str = '') -> tuple:
+        """Import devices from Excel with authentication and IP validation."""
         success_count = 0
         error_count = 0
         errors = []
         self.last_import_skipped_count = 0
         self.last_import_skipped = []
-        
+        workbook = None
         try:
             workbook = load_workbook(file_path, read_only=True, data_only=True)
-            sheet = workbook.active
-            rows = list(sheet.iter_rows(values_only=True))
+            rows = list(workbook.active.iter_rows(values_only=True))
             if not rows:
-                errors.append("Excel file is empty")
-                return 0, 0, errors
+                return 0, 0, ["Excel file is empty"]
 
             headers = [self._clean_excel_value(value).lower() for value in rows[0]]
             data_rows = rows[1:]
-            required_columns = ['ip', 'username', 'password']
-            missing_columns = [col for col in required_columns if col not in headers]
-            
-            if missing_columns:
-                errors.append(f"Excel file missing required columns: {missing_columns}")
-                return 0, len(data_rows), errors
-
+            missing = [name for name in ('ip', 'username') if name not in headers]
+            if missing:
+                return 0, len(data_rows), [
+                    f"Excel file missing required columns: {missing}"
+                ]
             header_index = {name: index for index, name in enumerate(headers) if name}
-            
+
             for index, values in enumerate(data_rows):
                 row_no = index + 2
                 row = {
-                    name: values[col_index] if col_index < len(values) else None
-                    for name, col_index in header_index.items()
+                    name: values[column] if column < len(values) else None
+                    for name, column in header_index.items()
                 }
                 try:
                     brand = self._clean_excel_value(row.get('brand'), 'h3c').lower()
@@ -210,36 +358,75 @@ class DeviceConfigManager:
                     port = self._clean_excel_port(row.get('port'), 22)
                     username = self._clean_excel_value(row.get('username'))
                     password = self._clean_excel_value(row.get('password'))
+                    if is_encrypted_password(password):
+                        password = decrypt_password(password, master_password)
                     name = self._clean_excel_value(row.get('name'))
+                    group = self._clean_excel_value(row.get('group'))
+                    tags = self._clean_excel_value(row.get('tags'))
+                    auth_method = self._clean_excel_value(
+                        row.get('auth_method'), 'password'
+                    ).lower()
+                    private_key_path = self._clean_excel_value(
+                        row.get('private_key_path')
+                    )
+                    if private_key_path and not os.path.isabs(private_key_path):
+                        private_key_path = os.path.abspath(os.path.join(
+                            os.path.dirname(file_path), private_key_path
+                        ))
+                    private_key_passphrase = self._clean_excel_value(
+                        row.get('private_key_passphrase')
+                    )
+                    if is_encrypted_password(private_key_passphrase):
+                        private_key_passphrase = decrypt_password(
+                            private_key_passphrase, master_password
+                        )
+                    host_key_policy = self._clean_excel_value(
+                        row.get('host_key_policy'), 'tofu'
+                    ).lower()
 
                     if not ip:
                         raise ValueError('ip is required')
                     if not username:
                         raise ValueError('username is required')
-                    if not password:
+                    if auth_method not in ('password', 'key'):
+                        raise ValueError('auth_method must be password or key')
+                    if auth_method == 'password' and not password:
                         raise ValueError('password is required')
+                    if auth_method == 'key' and not private_key_path:
+                        raise ValueError(
+                            'private_key_path is required for key authentication'
+                        )
 
-                    device = DeviceInfo(brand, ip, port, username, password, name)
+                    device = DeviceInfo(
+                        brand, ip, port, username, password, name,
+                        group=group, tags=tags, auth_method=auth_method,
+                        private_key_path=private_key_path,
+                        private_key_passphrase=private_key_passphrase,
+                        host_key_policy=host_key_policy,
+                    )
                     is_valid, error_msg = device.validate_ip_address()
                     if not is_valid:
                         raise ValueError(f'invalid IP address: {error_msg}')
-
                     if not self.add_device(device):
                         self.last_import_skipped_count += 1
-                        self.last_import_skipped.append(f"Row {row_no}: duplicate {ip}:{port}")
+                        self.last_import_skipped.append(
+                            f"Row {row_no}: duplicate {ip}:{port}"
+                        )
                         continue
                     success_count += 1
-                except Exception as e:
+                except Exception as exc:
                     error_count += 1
-                    errors.append(f"Row {row_no} import failed: {str(e)}")
-                    
-        except Exception as e:
-            errors.append(f"Excel file read failed: {str(e)}")
+                    errors.append(f"Row {row_no} import failed: {exc}")
+        except Exception as exc:
+            errors.append(f"Excel file read failed: {exc}")
             error_count = 1
-        
+        finally:
+            if workbook is not None:
+                workbook.close()
         return success_count, error_count, errors
 
-    def export_to_excel(self, file_path: str) -> bool:
+    def export_to_excel(self, file_path: str, include_password: bool = False,
+                        master_password: str = '') -> bool:
         """
         导出设备信息到Excel
         
@@ -252,10 +439,24 @@ class DeviceConfigManager:
         try:
             workbook = Workbook()
             sheet = workbook.active
-            headers = ['name', 'brand', 'ip', 'port', 'username', 'password', 'ip_version', 'ip_version_name']
+            headers = [
+                'name', 'group', 'tags', 'brand', 'ip', 'port', 'username',
+                'auth_method', 'password', 'private_key_path',
+                'private_key_passphrase', 'host_key_policy',
+                'ip_version', 'ip_version_name',
+            ]
             sheet.append(headers)
             for device in self.devices:
                 data = device.to_dict()
+                if include_password and master_password:
+                    data['password'] = encrypt_password(data['password'], master_password)
+                    if data.get('private_key_passphrase'):
+                        data['private_key_passphrase'] = encrypt_password(
+                            data['private_key_passphrase'], master_password
+                        )
+                else:
+                    data['password'] = ''
+                    data['private_key_passphrase'] = ''
                 sheet.append([data.get(header, '') for header in headers])
             workbook.save(file_path)
             return True
@@ -280,7 +481,34 @@ class DeviceConfigManager:
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            self.devices = [DeviceInfo.from_dict(item) for item in data]
+            if not isinstance(data, list):
+                raise ValueError('JSON root must be a device list')
+
+            loaded_devices = []
+            skipped_errors = []
+            seen_keys = set()
+            self.last_import_skipped_count = 0
+            self.last_import_skipped = []
+            for index, item in enumerate(data, start=1):
+                try:
+                    device = self._device_from_mapping(item)
+                    key = self._device_key(device.ip, device.port)
+                    if key in seen_keys:
+                        self.last_import_skipped_count += 1
+                        self.last_import_skipped.append(f"Item {index}: duplicate {device.ip}:{device.port}")
+                        continue
+                    seen_keys.add(key)
+                    loaded_devices.append(device)
+                except Exception as e:
+                    skipped_errors.append(f"Item {index}: {str(e)}")
+
+            if data and not loaded_devices:
+                raise ValueError('; '.join(skipped_errors) or 'no valid devices')
+
+            if skipped_errors:
+                print(f"JSON load skipped invalid devices: {'; '.join(skipped_errors)}")
+
+            self.devices = loaded_devices
             return True
         except Exception as e:
             print(f"加载失败: {str(e)}")
@@ -309,9 +537,19 @@ class DeviceConfigManager:
             workbook = Workbook()
             sheet = workbook.active
             sheet.title = "devices"
-            sheet.append(['name', 'brand', 'ip', 'port', 'username', 'password'])
-            sheet.append(['设备1', 'h3c', '192.168.1.1', 22, 'admin', 'password1'])
-            sheet.append(['设备2', 'huawei', '192.168.1.2', 22, 'admin', 'password2'])
+            sheet.append([
+                'name', 'group', 'tags', 'brand', 'ip', 'port', 'username',
+                'auth_method', 'password', 'private_key_path',
+                'private_key_passphrase', 'host_key_policy',
+            ])
+            sheet.append([
+                'SW1', '核心交换机', '机房A,核心', 'h3c', '192.168.1.1',
+                22, 'admin', 'password', 'password1', '', '', 'tofu',
+            ])
+            sheet.append([
+                'SW2', '接入交换机', '机房A,接入', 'h3c', '192.168.1.2',
+                22, 'admin', 'key', '', '.ssh/id_ed25519', '', 'strict',
+            ])
             workbook.save(file_path)
             return True
         except Exception as e:

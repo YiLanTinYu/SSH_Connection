@@ -1,0 +1,16 @@
+# H3C Comware 7：本地账号与 SSH
+# 密钥生成带交互提示，不参与自动批量执行。
+# MANUAL: 首次开局请先在串口控制台执行 public-key local create rsa，并按设备提示选择至少 2048 位密钥。
+system-view
+local-user {{ADMIN_USER}} class manage
+password simple {{ADMIN_PASSWORD}}
+service-type ssh terminal
+authorization-attribute user-role network-admin
+quit
+ssh server enable
+line vty 0 63
+authentication-mode scheme
+protocol inbound ssh
+idle-timeout {{IDLE_MINUTES}} 0
+quit
+return

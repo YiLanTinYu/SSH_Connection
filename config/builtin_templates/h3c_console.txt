@@ -1,0 +1,9 @@
+# H3C Comware 7：Console 安全配置
+# 依赖：已存在具有 terminal 服务和 network-admin 角色的本地用户。
+# 注意：退出当前 Console 会话后认证方式才会生效。
+system-view
+line console 0
+authentication-mode scheme
+idle-timeout {{IDLE_MINUTES}} 0
+quit
+return
