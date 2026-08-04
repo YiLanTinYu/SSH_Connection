@@ -32,7 +32,7 @@ def _render_svg_icon(path: Path, color: str, size: int = 28) -> QPixmap:
 
 
 class SidebarToolButton(QToolButton):
-    """Icon-only rail button with a restrained active marker."""
+    """Icon-only rail button with a restrained active rail."""
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -41,8 +41,8 @@ class SidebarToolButton(QToolButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor("#F06449"))
-        painter.drawEllipse(self.width() - 9, 7, 5, 5)
+        painter.setBrush(QColor("#E6644F"))
+        painter.drawRoundedRect(1, 10, 3, self.height() - 20, 2, 2)
 
 
 class CollapsibleSidebar(QWidget):
@@ -73,8 +73,8 @@ class CollapsibleSidebar(QWidget):
         self._rail.setObjectName("sidebar_rail")
         self._rail.setFixedWidth(self.COLLAPSED_WIDTH)
         rail_layout = QVBoxLayout(self._rail)
-        rail_layout.setContentsMargins(10, 12, 10, 12)
-        rail_layout.setSpacing(8)
+        rail_layout.setContentsMargins(10, 14, 10, 14)
+        rail_layout.setSpacing(10)
         self._rail_layout = rail_layout
         rail_layout.addStretch()
         root.addWidget(self._rail)
@@ -82,8 +82,8 @@ class CollapsibleSidebar(QWidget):
         self._content_frame = QFrame()
         self._content_frame.setObjectName("sidebar_content")
         content_layout = QVBoxLayout(self._content_frame)
-        content_layout.setContentsMargins(16, 12, 10, 10)
-        content_layout.setSpacing(8)
+        content_layout.setContentsMargins(16, 14, 12, 12)
+        content_layout.setSpacing(9)
 
         self._title = QLabel()
         self._title.setObjectName("sidebar_page_title")
@@ -104,34 +104,34 @@ class CollapsibleSidebar(QWidget):
         self.setStyleSheet(
             """
             QFrame#sidebar_rail {
-                background: #073D4A;
+                background: #073B49;
                 border: none;
-                border-top-left-radius: 7px;
-                border-bottom-left-radius: 7px;
+                border-top-left-radius: 6px;
+                border-bottom-left-radius: 6px;
             }
             QToolButton#sidebar_nav_button {
                 background: transparent;
                 border: 1px solid transparent;
-                border-radius: 7px;
+                border-radius: 6px;
                 padding: 0;
             }
             QToolButton#sidebar_nav_button:hover {
-                background: #0B5361;
-                border-color: #176875;
+                background: #0D5261;
+                border-color: #236B78;
             }
             QToolButton#sidebar_nav_button:checked {
-                background: #0788B5;
-                border-color: #16C7B7;
+                background: #0B718A;
+                border-color: #46AEB9;
             }
             QFrame#sidebar_content {
-                background: #EAF1F2;
-                border: 1px solid #C9DADB;
+                background: #F5F8F8;
+                border: 1px solid #CFDDE0;
                 border-left: none;
-                border-top-right-radius: 7px;
-                border-bottom-right-radius: 7px;
+                border-top-right-radius: 6px;
+                border-bottom-right-radius: 6px;
             }
             QLabel#sidebar_page_title {
-                color: #07566A;
+                color: #0B4A5A;
                 background: transparent;
                 font-size: 18px;
                 font-weight: 700;
@@ -157,16 +157,16 @@ class CollapsibleSidebar(QWidget):
         button.setObjectName("sidebar_nav_button")
         button.setCheckable(True)
         button.setAutoExclusive(False)
-        button.setFixedSize(48, 48)
-        button.setIconSize(QSize(28, 28))
+        button.setFixedSize(48, 46)
+        button.setIconSize(QSize(25, 25))
         button.setToolTip(title)
         button.setAccessibleName(title)
 
         icon_path = self._icon_dir / icon_filename
         icon = QIcon()
-        icon.addPixmap(_render_svg_icon(icon_path, "#A9C4C8"), QIcon.Normal, QIcon.Off)
+        icon.addPixmap(_render_svg_icon(icon_path, "#A7C0C5"), QIcon.Normal, QIcon.Off)
         icon.addPixmap(_render_svg_icon(icon_path, "#F8FFFD"), QIcon.Normal, QIcon.On)
-        icon.addPixmap(_render_svg_icon(icon_path, "#6F8E93"), QIcon.Disabled, QIcon.Off)
+        icon.addPixmap(_render_svg_icon(icon_path, "#64818A"), QIcon.Disabled, QIcon.Off)
         button.setIcon(icon)
         button.clicked.connect(lambda checked=False, page_key=key: self._activate(page_key))
 
@@ -251,7 +251,7 @@ class CollapsibleSidebar(QWidget):
 
     def set_page_title_font_size(self, pixel_size: int):
         self._title.setStyleSheet(
-            "color: #07566A; background: transparent; "
+            "color: #0B4A5A; background: transparent; "
             f"font-size: {max(18, int(pixel_size))}px; font-weight: 700; "
             "padding: 2px 4px;"
         )

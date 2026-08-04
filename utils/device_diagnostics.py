@@ -162,6 +162,166 @@ def _template_dir() -> Path:
     )
 
 
+def _parse_comware_health_fallback(command: str, text: str) -> list[dict]:
+    """Parse stable Comware health tables not covered by bundled templates."""
+    if command == "display power":
+        return [
+            {"device_id": match.group(1), "status": match.group(2)}
+            for match in re.finditer(
+                r"(?im)^\s*(\d+)\s+"
+                r"(Normal|Absent|Fault|Abnormal|Offline)\s*$",
+                text,
+            )
+        ]
+    if command == "display interface brief":
+        records = []
+        for match in re.finditer(
+            r"(?im)^\s*(\S+)\s+"
+            r"(UP|DOWN|ADM|Stby)\s+(\S+)(?:\s+.*)?$",
+            text,
+        ):
+            records.append({
+                "interface": match.group(1),
+                "link": match.group(2).upper(),
+                "protocol": match.group(3),
+            })
+        return records
+    if command == "display device manuinfo":
+        records = []
+        current = {}
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            normalized_key = key.strip().lower()
+            if normalized_key == "device_id" and current:
+                records.append(current)
+                current = {}
+            if normalized_key.startswith("device_") or normalized_key in {
+                "mac_address",
+                "manufacturing_date",
+                "vendor_name",
+            }:
+                current[normalized_key] = value.strip()
+        if current:
+            records.append(current)
+        return records
+    return []
+
+
+def _parse_huawei_health_fallback(command: str, text: str) -> list[dict]:
+    """Parse conservative VRP5/VRP8 health rows when NTC has no template."""
+    if command == "display cpu-usage":
+        match = re.search(
+            r"CPU utilization for five seconds:\s*(\d+)%:\s*"
+            r"one minute:\s*(\d+)%:\s*five minutes:\s*(\d+)%",
+            text,
+            re.IGNORECASE,
+        )
+        return [{
+            "five_sec": match.group(1),
+            "one_min": match.group(2),
+            "five_min": match.group(3),
+        }] if match else []
+    if command == "display memory-usage":
+        total = re.search(r"System Total Memory Is:\s*(\d+)", text, re.I)
+        used = re.search(r"Total Memory Used Is:\s*(\d+)", text, re.I)
+        percent = re.search(r"Memory Using Percentage Is:\s*(\d+)%", text, re.I)
+        if not percent:
+            return []
+        return [{
+            "total_bytes": total.group(1) if total else "",
+            "used_bytes": used.group(1) if used else "",
+            "used_percent": percent.group(1),
+        }]
+    if command == "display temperature all":
+        return [
+            {
+                "slot": match.group(1),
+                "card": match.group(2),
+                "sensor": match.group(3),
+                "status": match.group(4),
+                "temperature": match.group(5),
+            }
+            for match in re.finditer(
+                r"(?im)^\s*(\d+)\s+(\S+)\s+(\S+)\s+"
+                r"(Normal|Abnormal)\s+(-?\d+)(?:\s+-?\d+){4}\s*$",
+                text,
+            )
+        ]
+    if command == "display fan":
+        return [
+            {
+                "slot": match.group(1),
+                "fan_id": match.group(2),
+                "online": match.group(3),
+                "status": match.group(4),
+                "speed": match.group(5),
+            }
+            for match in re.finditer(
+                r"(?im)^\s*(\d+)\s+(\d+)\s+(Present|Absent)\s+"
+                r"(\S+)\s+(\S+)(?:\s+.*)?$",
+                text,
+            )
+        ]
+    if command == "display power":
+        return [
+            {
+                "slot": match.group(1),
+                "power_id": match.group(2),
+                "online": match.group(3),
+                "mode": match.group(4),
+                "state": match.group(5),
+                "power": match.group(6),
+            }
+            for match in re.finditer(
+                r"(?im)^\s*(\d+)\s+(\S+)\s+(Present|Absent)\s+"
+                r"(\S+)\s+(\S+)\s+(\S+)\s*$",
+                text,
+            )
+        ]
+    if command == "display interface brief":
+        return [
+            {
+                "interface": match.group(1),
+                "phy": match.group(2),
+                "link": match.group(2),
+                "protocol": match.group(3),
+            }
+            for match in re.finditer(
+                r"(?im)^\s*(\S+)\s+"
+                r"(?:\*|#)?(up|down)\s+(\S+)\s+"
+                r"(?:\d+%|--)\s+(?:\d+%|--)\s+\d+\s+\d+\s*$",
+                text,
+            )
+        ]
+    if command == "display device":
+        records = []
+        row_pattern = re.compile(
+            r"^\s*(?:(\d+)\s+)?(\S+)\s+(\S+)\s+"
+            r"(Present|Absent)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$",
+            re.IGNORECASE,
+        )
+        for line in text.splitlines():
+            match = row_pattern.match(line)
+            if not match:
+                continue
+            records.append({
+                "slot": match.group(1) or "",
+                "sub": match.group(2),
+                "type": match.group(3),
+                "online": match.group(4),
+                "power": match.group(5),
+                "register": match.group(6),
+                "status": match.group(7),
+                "alarm_status": match.group(7),
+                "role": match.group(8),
+            })
+        return records
+    return []
+
+
 def parse_comware_output(command: str, output: str) -> list[dict]:
     """Parse Comware output with NTC Templates or the attributed NAPALM templates."""
     text = str(output or "")
@@ -175,19 +335,21 @@ def parse_comware_output(command: str, output: str) -> list[dict]:
     local_name = _LOCAL_TEMPLATE_FILES.get(template_key)
     if local_name:
         path = _template_dir() / local_name
-        if not path.is_file():
-            return []
-        with path.open("r", encoding="utf-8") as template_file:
-            parser = textfsm.TextFSM(template_file)
-            rows = parser.ParseText(text)
-            headers = [name.lower() for name in parser.header]
-        records = [dict(zip(headers, row)) for row in rows]
-        if template_key == "display interface":
-            records = [
-                record for record in records
-                if str(record.get("link_status") or "").strip()
-            ]
-        return records
+        records = []
+        if path.is_file():
+            with path.open("r", encoding="utf-8") as template_file:
+                parser = textfsm.TextFSM(template_file)
+                rows = parser.ParseText(text)
+                headers = [name.lower() for name in parser.header]
+            records = [dict(zip(headers, row)) for row in rows]
+            if template_key == "display interface":
+                records = [
+                    record for record in records
+                    if str(record.get("link_status") or "").strip()
+                ]
+        return records or _parse_comware_health_fallback(
+            normalized_command, text
+        )
     try:
         parsed = parse_output(
             platform="hp_comware",
@@ -195,8 +357,10 @@ def parse_comware_output(command: str, output: str) -> list[dict]:
             data=text,
         )
     except Exception:
-        return []
-    return list(parsed or [])
+        parsed = []
+    return list(parsed or []) or _parse_comware_health_fallback(
+        normalized_command, text
+    )
 
 
 def normalize_brand(value: str) -> str:
@@ -238,8 +402,12 @@ def parse_device_output(brand: str, command: str, output: str) -> list[dict]:
             data=str(output or ""),
         )
     except Exception:
-        return []
+        parsed = []
     records = list(parsed or [])
+    if not records:
+        records = _parse_huawei_health_fallback(
+            normalized_command, str(output or "")
+        )
     if normalized_command == "display mac-address":
         for record in records:
             record.setdefault(
@@ -388,7 +556,7 @@ def _summarize_huawei_health(outputs: dict[str, str]) -> tuple[str, bool]:
 
     temperatures = parse_device_output(
         "huawei",
-        "display temperature",
+        "display temperature all",
         outputs.get("display temperature all", ""),
     )
     if temperatures:

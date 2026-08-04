@@ -214,7 +214,8 @@ def write_config_backup(
 
         config_path = device_dir / f"{stem}.cfg"
         metadata_path = device_dir / f"{stem}.json"
-        config_path.write_text(content, encoding="utf-8")
+        content_bytes = content.encode("utf-8")
+        config_path.write_bytes(content_bytes)
 
         metadata = {
             "schema": "aomt.config-backup.v1",
@@ -231,9 +232,7 @@ def write_config_backup(
                 "content_type": "text/plain",
                 "encoding": "utf-8",
                 "line_count": len(content.splitlines()),
-                "sha256": hashlib.sha256(
-                    content.encode("utf-8")
-                ).hexdigest(),
+                "sha256": hashlib.sha256(content_bytes).hexdigest(),
             },
         }
         metadata_path.write_text(

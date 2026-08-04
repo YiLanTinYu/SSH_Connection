@@ -12,7 +12,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import paramiko
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import QEvent, Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
@@ -159,6 +159,16 @@ class SSHConsoleDialog(QDialog):
         self._build_ui()
         self.set_devices(devices or [])
         self._set_connected(False)
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.WindowStateChange and hasattr(
+            self, "terminal"
+        ):
+            if self.isMinimized():
+                self.terminal.suspend_for_window_minimize()
+            else:
+                self.terminal.restore_after_window_minimize()
+        super().changeEvent(event)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)

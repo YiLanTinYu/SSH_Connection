@@ -100,6 +100,54 @@ Speed : 1000, Loopback: NONE
 Duplex: FULL, Negotiation: ENABLE
 """
 
+COMWARE_S6850_POWER_OUTPUT = """\
+Device Info on Slot 1:
+Device ID.  Status
+ 1          Normal
+ 2          Normal
+<H3C>
+"""
+
+COMWARE_S6850_MANUINFO_OUTPUT = """\
+Slot 1 CPU 0:
+DEVICE_ID:Slot ID:1
+DEVICE_NAME:Simware
+DEVICE_SERIAL_NUMBER:REDACTED
+VENDOR_NAME:H3C
+Fan 1:
+DEVICE_ID:Fan ID:1
+DEVICE_NAME:Simware
+DEVICE_SERIAL_NUMBER:REDACTED
+VENDOR_NAME:H3C
+<H3C>
+"""
+
+HUAWEI_S5720_TEMPERATURE_OUTPUT = """\
+Slot  Card  Sensor Status    Current(C) Lower(C) Lower Resume(C) Upper(C) Upper Resume(C)
+0     NA    NA     Normal            44        0         4       61        57
+<HUAWEI>
+"""
+
+HUAWEI_S5720_FAN_OUTPUT = """\
+Slot  FanID   Online    Status    Speed     Mode     Airflow         Auto Min-Speed
+0         1   Present   Normal      30%     Auto     Side-to-Side                0%
+<HUAWEI>
+"""
+
+HUAWEI_S5720_POWER_OUTPUT = """\
+Slot    PowerID  Online   Mode   State      Power(W)
+0       PWR1     Present  AC     Supply        60.00
+0       PWR2     Absent   -      -                 -
+<HUAWEI>
+"""
+
+HUAWEI_S5720_DEVICE_OUTPUT = """\
+Slot Sub  Type                   Online    Power    Register     Status   Role
+0    -    S5720-28X-SI           Present   PowerOn  Registered   Normal   Master
+     PWR1 POWER                  Present   PowerOn  Registered   Normal   NA
+<HUAWEI>
+"""
+
 
 def test_ntc_templates_parse_comware_arp_mac_and_interfaces():
     arp = parse_comware_output(
@@ -160,6 +208,55 @@ def test_huawei_vrp_ntc_templates_and_profile_commands():
     assert get_lookup_command("huawei", "mac", "0011-2233-4455") == (
         "display mac-address", "display mac-address"
     )
+
+
+def test_real_device_health_formats_use_conservative_fallback_parsers():
+    power = parse_comware_output(
+        "display power", COMWARE_S6850_POWER_OUTPUT
+    )
+    manuinfo = parse_comware_output(
+        "display device manuinfo", COMWARE_S6850_MANUINFO_OUTPUT
+    )
+    huawei_cpu = parse_device_output(
+        "huawei", "display cpu-usage", HUAWEI_CPU_OUTPUT
+    )
+    huawei_memory = parse_device_output(
+        "huawei", "display memory-usage", HUAWEI_MEMORY_OUTPUT
+    )
+    temperatures = parse_device_output(
+        "huawei", "display temperature all", HUAWEI_S5720_TEMPERATURE_OUTPUT
+    )
+    fans = parse_device_output(
+        "huawei", "display fan", HUAWEI_S5720_FAN_OUTPUT
+    )
+    powers = parse_device_output(
+        "huawei", "display power", HUAWEI_S5720_POWER_OUTPUT
+    )
+    interfaces = parse_device_output(
+        "huawei", "display interface brief", HUAWEI_INTERFACE_BRIEF_OUTPUT
+    )
+    hardware = parse_device_output(
+        "huawei", "display device", HUAWEI_S5720_DEVICE_OUTPUT
+    )
+
+    assert [row["status"] for row in power] == ["Normal", "Normal"]
+    assert len(manuinfo) == 2
+    assert huawei_cpu[0]["five_sec"] == "28"
+    assert huawei_memory[0]["used_percent"] == "25"
+    assert temperatures[0]["temperature"] == "44"
+    assert fans[0]["status"] == "Normal"
+    assert powers[0]["state"] == "Supply"
+    assert len(interfaces) == 2
+    assert interfaces[0]["link"] == "up"
+    assert len(hardware) == 2
+    assert hardware[0]["alarm_status"] == "Normal"
+
+    summary, usable = summarize_health(
+        {"display temperature all": HUAWEI_S5720_TEMPERATURE_OUTPUT},
+        brand="huawei",
+    )
+    assert usable is True
+    assert "最高温度：44 °C" in summary
 
 
 def test_health_summary_uses_structured_open_source_parsers():

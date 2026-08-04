@@ -114,6 +114,47 @@ def test_terminal_widget_preserves_text_when_resized_smaller_and_larger():
         terminal.close()
 
 
+def test_terminal_widget_restores_bottom_and_cursor_after_minimize_cycle():
+    app = QApplication.instance() or QApplication([])
+    terminal = TerminalWidget(columns=80, lines=20, history=300)
+    try:
+        terminal.resize(900, 500)
+        terminal.show()
+        payload = "\r\n".join(
+            f"history line {index:03d}" for index in range(140)
+        ) + "\r\n<H3C>"
+        terminal.feed_text(payload)
+        terminal.flush_pending_output()
+        app.processEvents()
+        terminal.verticalScrollBar().setValue(
+            terminal.verticalScrollBar().maximum()
+        )
+        original_size = (terminal.columns, terminal.lines)
+
+        terminal.suspend_for_window_minimize()
+        terminal.resize(80, 40)
+        terminal.feed_text("\r\n[H3C]")
+        terminal.flush_pending_output()
+        app.processEvents()
+
+        assert (terminal.columns, terminal.lines) == original_size
+
+        terminal.resize(900, 500)
+        terminal.restore_after_window_minimize()
+        QTest.qWait(20)
+        app.processEvents()
+
+        scrollbar = terminal.verticalScrollBar()
+        assert scrollbar.value() == scrollbar.maximum()
+        assert terminal.textCursor().position() == (
+            terminal._visual_cursor_position
+        )
+        assert "history line 139" in terminal.toPlainText()
+        assert "[H3C]" in terminal.toPlainText()
+    finally:
+        terminal.close()
+
+
 def test_terminal_widget_emits_terminal_key_sequences():
     app = QApplication.instance() or QApplication([])
     terminal = TerminalWidget(columns=20, lines=5)
@@ -339,3 +380,15 @@ def test_ssh_console_keeps_imported_device_list_editable():
         app.processEvents()
     finally:
         dialog.close()
+
+
+def test_terminal_widget_uses_explicit_enlarged_output_font():
+    app = QApplication.instance() or QApplication([])
+    terminal = TerminalWidget()
+    try:
+        terminal.show()
+        app.processEvents()
+        assert terminal.font().pixelSize() == 18
+        assert "font-size: 18px" in terminal.styleSheet()
+    finally:
+        terminal.close()

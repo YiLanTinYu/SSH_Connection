@@ -47,3 +47,15 @@ dist/**/*.log
 logs/
 .pytest_cache/
 srbuild/
+
+# Runtime exports and sensitive test artifacts
+outputs/
+captures/
+*.pcap
+*.pcapng
+test_data/*/*.cfg
+test_data/*/*.json
+test_data/*/*.log
+test_data/*_encrypted.xlsx
+# Contains real device credentials; keep local only.
+test_data/六台交换机同名脚本测试设备.xlsx

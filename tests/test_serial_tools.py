@@ -411,12 +411,14 @@ def test_serial_crlf_is_rendered_as_one_line_break(monkeypatch):
         dialog.close()
 
 
-def test_terminal_keeps_readable_font_without_forced_pixel_size(monkeypatch):
+def test_terminal_uses_explicit_output_pixel_size(monkeypatch):
     app = QApplication.instance() or QApplication([])
     monkeypatch.setattr("ui.serial_console.discover_serial_ports", lambda: [])
     dialog = SerialConsoleDialog()
     try:
-        assert dialog.terminal.font().pointSize() == 12
-        assert "font-size" not in dialog.terminal.styleSheet()
+        dialog.show()
+        app.processEvents()
+        assert dialog.terminal.font().pixelSize() == 18
+        assert "font-size: 18px" in dialog.terminal.styleSheet()
     finally:
         dialog.close()

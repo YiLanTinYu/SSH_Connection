@@ -7,6 +7,7 @@ import re
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
+    QAbstractItemView,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -28,6 +29,7 @@ from utils.maintenance_tools import normalize_host
 
 
 MODE_TITLES = {
+    "shared_targets": "管理设备作业目标",
     "ping": "批量 Ping 目标",
     "port": "端口检测目标",
     "ssh_login": "SSH 登录测试目标",
@@ -43,6 +45,8 @@ SSH_MODES = {
     "terminal_locate",
     "interface_diagnosis",
 }
+
+PORT_MODES = SSH_MODES | {"shared_targets"}
 
 MAX_PING_NETWORK_TARGETS = 4096
 
@@ -179,6 +183,7 @@ class MaintenanceTargetDialog(QDialog):
         super().__init__(parent)
         self.mode = mode
         self.devices = list(devices or [])
+        self._removed_temporary_targets = []
         self.setWindowTitle(MODE_TITLES.get(mode, "选择运维目标"))
         self.resize(820, 760)
         self.setMinimumSize(720, 640)
@@ -194,24 +199,41 @@ class MaintenanceTargetDialog(QDialog):
                 "可同时使用设备列表、手动地址和 CIDR 网段；"
                 "重复地址会自动合并。"
             )
+        elif self.mode == "shared_targets":
+            hint_text = (
+                "可同时使用当前设备范围和临时输入目标；"
+                "临时设备会同步到右侧设备列表，且只在本次运行期间有效。"
+            )
         hint = QLabel(hint_text)
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        imported_group = QGroupBox("已添加或 Excel 导入的设备")
+        imported_group = QGroupBox(
+            "当前设备范围"
+            if self.mode == "shared_targets"
+            else "已添加或 Excel 导入的设备"
+        )
         imported_layout = QVBoxLayout(imported_group)
         self.device_list = QListWidget()
         self.device_list.setMinimumHeight(180)
+        self.device_list.setSelectionMode(
+            QAbstractItemView.ExtendedSelection
+        )
         imported_layout.addWidget(self.device_list, 1)
 
         selection_row = QHBoxLayout()
         select_all = QPushButton("全选")
         select_none = QPushButton("全不选")
+        self.remove_temporary_button = QPushButton("移除选中临时目标")
         select_all.clicked.connect(lambda: self._set_all_checked(True))
         select_none.clicked.connect(lambda: self._set_all_checked(False))
+        self.remove_temporary_button.clicked.connect(
+            self.remove_selected_temporary_targets
+        )
         selection_row.addWidget(select_all)
         selection_row.addWidget(select_none)
         selection_row.addStretch(1)
+        selection_row.addWidget(self.remove_temporary_button)
         imported_layout.addLayout(selection_row)
         layout.addWidget(imported_group, 1)
 
@@ -240,10 +262,10 @@ class MaintenanceTargetDialog(QDialog):
         credentials_layout.addRow("默认端口", self.port_input)
         credentials_layout.addRow("用户名", self.username_input)
         credentials_layout.addRow("密码", self.password_input)
-        self.credentials_widget.setVisible(self.mode in SSH_MODES)
+        self.credentials_widget.setVisible(self.mode in PORT_MODES)
         manual_layout.addWidget(self.credentials_widget)
 
-        if self.mode in SSH_MODES:
+        if self.mode in PORT_MODES:
             self.manual_input.setPlaceholderText(
                 "每行一个，也可使用逗号分隔\n"
                 "192.168.10.10\n"
@@ -252,7 +274,7 @@ class MaintenanceTargetDialog(QDialog):
             )
         layout.addWidget(manual_group)
 
-        self.network_group = QGroupBox("按网段 Ping")
+        self.network_group = QGroupBox("按网段补充 Ping 目标")
         network_layout = QVBoxLayout(self.network_group)
         self.network_input = QPlainTextEdit()
         self.network_input.setPlaceholderText(
@@ -265,16 +287,26 @@ class MaintenanceTargetDialog(QDialog):
         network_hint = QLabel(
             "IPv4 自动排除网络地址和广播地址；"
             f"合并后每次最多 {MAX_PING_NETWORK_TARGETS:,} 个目标。"
+            + (
+                " 这里生成的地址只用于批量 Ping，"
+                "不会进入 SSH、巡检或配置任务。"
+                if self.mode == "shared_targets"
+                else ""
+            )
         )
         network_hint.setWordWrap(True)
         network_layout.addWidget(network_hint)
-        self.network_group.setVisible(self.mode == "ping")
+        self.network_group.setVisible(
+            self.mode in {"ping", "shared_targets"}
+        )
         layout.addWidget(self.network_group)
 
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel
         )
-        self.buttons.button(QDialogButtonBox.Ok).setText("开始")
+        self.buttons.button(QDialogButtonBox.Ok).setText(
+            "应用" if self.mode == "shared_targets" else "开始"
+        )
         self.buttons.button(QDialogButtonBox.Cancel).setText("取消")
         self.buttons.accepted.connect(self._validate_and_accept)
         self.buttons.rejected.connect(self.reject)
@@ -289,11 +321,16 @@ class MaintenanceTargetDialog(QDialog):
             label = f"{name}  |  {display_host}:{port}" if name else (
                 f"{display_host}:{port}"
             )
+            if getattr(device, "_aomt_temporary", False):
+                label = f"[临时] {label}"
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, device)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked)
             self.device_list.addItem(item)
+        self.remove_temporary_button.setVisible(
+            self.mode == "shared_targets"
+        )
         if not self.devices:
             item = QListWidgetItem("当前设备列表为空，可在下方手动输入目标")
             item.setFlags(Qt.NoItemFlags)
@@ -307,10 +344,47 @@ class MaintenanceTargetDialog(QDialog):
             if item.flags() & Qt.ItemIsUserCheckable:
                 item.setCheckState(state)
 
+    def remove_selected_temporary_targets(self):
+        removable = [
+            item
+            for item in self.device_list.selectedItems()
+            if getattr(item.data(Qt.UserRole), "_aomt_temporary", False)
+            and not getattr(
+                item.data(Qt.UserRole),
+                "_aomt_ping_only",
+                False,
+            )
+        ]
+        if not removable:
+            QMessageBox.information(
+                self,
+                "移除临时目标",
+                "请先选中需要移除的临时目标。",
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            "确认移除",
+            f"确定移除选中的 {len(removable)} 个临时目标吗？\n\n"
+            "确认窗口后，右侧设备列表也会同步移除。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        for item in removable:
+            self._removed_temporary_targets.append(
+                item.data(Qt.UserRole)
+            )
+            self.device_list.takeItem(self.device_list.row(item))
+
+    def removed_temporary_targets(self) -> list:
+        return list(self._removed_temporary_targets)
+
     def selected_devices(self) -> list:
         selected = []
         seen = set()
-        include_port = self.mode in SSH_MODES
+        include_port = self.mode in PORT_MODES
         for index in range(self.device_list.count()):
             item = self.device_list.item(index)
             device = item.data(Qt.UserRole)
@@ -335,6 +409,11 @@ class MaintenanceTargetDialog(QDialog):
                 raise ValueError("请输入手工目标使用的 SSH 用户名")
             if not password:
                 raise ValueError("请输入手工目标使用的 SSH 密码")
+        elif manual_targets and self.mode == "shared_targets":
+            username = self.username_input.text().strip()
+            password = self.password_input.text()
+            if bool(username) != bool(password):
+                raise ValueError("临时 SSH 凭据的用户名和密码必须同时填写")
         else:
             username = ""
             password = ""
@@ -344,20 +423,22 @@ class MaintenanceTargetDialog(QDialog):
             if key in seen:
                 continue
             seen.add(key)
-            selected.append(
-                DeviceInfo(
-                    brand="",
-                    ip=host,
-                    port=port,
-                    username=username,
-                    password=password,
-                    name=host,
-                    auth_method="password",
-                    host_key_policy="tofu",
-                )
+            device = DeviceInfo(
+                brand="",
+                ip=host,
+                port=port,
+                username=username,
+                password=password,
+                name=host,
+                group="临时目标",
+                tags="本次运行",
+                auth_method="password",
+                host_key_policy="tofu",
             )
+            device._aomt_temporary = True
+            selected.append(device)
 
-        if self.mode == "ping":
+        if self.mode in {"ping", "shared_targets"}:
             for host in expand_ping_networks(
                 self.network_input.toPlainText(),
             ):
@@ -365,18 +446,19 @@ class MaintenanceTargetDialog(QDialog):
                 if key in seen:
                     continue
                 seen.add(key)
-                selected.append(
-                    DeviceInfo(
-                        brand="",
-                        ip=host,
-                        port=22,
-                        username="",
-                        password="",
-                        name=host,
-                        auth_method="password",
-                        host_key_policy="tofu",
-                    )
+                device = DeviceInfo(
+                    brand="",
+                    ip=host,
+                    port=22,
+                    username="",
+                    password="",
+                    name=host,
+                    auth_method="password",
+                    host_key_policy="tofu",
                 )
+                device._aomt_temporary = True
+                device._aomt_ping_only = True
+                selected.append(device)
         return selected
 
     def _validate_and_accept(self):
@@ -385,7 +467,10 @@ class MaintenanceTargetDialog(QDialog):
         except ValueError as exc:
             QMessageBox.warning(self, "目标输入错误", str(exc))
             return
-        if not devices:
+        if not devices and not (
+            self.mode == "shared_targets"
+            and self._removed_temporary_targets
+        ):
             QMessageBox.warning(
                 self,
                 "未选择目标",

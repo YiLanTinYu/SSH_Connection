@@ -267,6 +267,40 @@ def test_cancelled_connection_stops_command_loop():
     assert connection.execute_command("display version") == "任务已取消"
 
 
+class ChunkedPromptShell:
+    def __init__(self):
+        self.outputs = [
+            b"CPU Usage : 9%\\r\\nVIDL 91%",
+            b"\\r\\n<HUAWEI>",
+        ]
+
+    def recv_ready(self):
+        return bool(self.outputs)
+
+    def recv(self, _size):
+        return self.outputs.pop(0)
+
+    def send(self, _text):
+        return None
+
+
+def test_prompt_detection_does_not_stop_at_percentage_output():
+    connection = SSHConnection(
+        DeviceInfo("huawei", "192.0.2.1", 22, "admin", "pwd")
+    )
+    connection._shell = ChunkedPromptShell()
+
+    output = connection._read_until_prompt(timeout=0.2)
+
+    assert "VIDL 91%" in output
+    assert output.rstrip().endswith("<HUAWEI>")
+    assert connection._shell.outputs == []
+    assert not connection._has_terminal_prompt("CPU Usage : 91%")
+    assert connection._has_terminal_prompt("<HUAWEI>")
+    assert connection._has_terminal_prompt("[HUAWEI]")
+    assert connection._has_terminal_prompt("Router#")
+
+
 def test_business_commands_are_sent_without_brand_translation(monkeypatch):
     connection = SSHConnection(DeviceInfo("cisco", "192.0.2.1", 22, "admin", "pwd"))
     connection.brand_detected = "cisco"

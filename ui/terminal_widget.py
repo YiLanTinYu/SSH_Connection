@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import QApplication, QMenu, QPlainTextEdit
 import pyte
 
 
+
 ANSI_COLORS = {
     "black": "#17242B",
     "red": "#F06A6A",
@@ -29,7 +30,6 @@ ANSI_COLORS = {
     "brightcyan": "#76E3EA",
     "brightwhite": "#FFFFFF",
 }
-
 
 class TerminalWidget(QPlainTextEdit):
     """A Qt display and keyboard bridge backed by a pyte VT screen."""
@@ -52,6 +52,8 @@ class TerminalWidget(QPlainTextEdit):
         self._stream = pyte.Stream(self._screen)
         self._pending_text = []
         self._visual_cursor_position = 0
+        self._resize_suspended = False
+        self._saved_view_state = None
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
         self._render_timer.setInterval(20)
@@ -70,7 +72,7 @@ class TerminalWidget(QPlainTextEdit):
         self.setStyleSheet(
             "QPlainTextEdit { background: #073746; color: #D9F3F2;"
             " border: 1px solid #2A7180; padding: 8px;"
-            " font-family: Consolas; }"
+            " font-family: Consolas; font-size: 18px; }"
         )
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -240,10 +242,17 @@ class TerminalWidget(QPlainTextEdit):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if self._resize_suspended or self.window().isMinimized():
+            return
+        self._sync_terminal_size_to_viewport()
+
+    def _sync_terminal_size_to_viewport(self):
         metrics = self.fontMetrics()
         char_width = max(1, metrics.horizontalAdvance("M"))
         line_height = max(1, metrics.lineSpacing())
         viewport = self.viewport().size()
+        if viewport.width() <= 0 or viewport.height() <= 0:
+            return
         columns = max(20, viewport.width() // char_width)
         lines = max(5, viewport.height() // line_height)
         if columns == self._columns and lines == self._lines:
@@ -259,6 +268,42 @@ class TerminalWidget(QPlainTextEdit):
         self.setMaximumBlockCount(self._history_size + self._lines)
         self._render_screen()
         self.terminal_resized.emit(columns, lines)
+
+    def suspend_for_window_minimize(self):
+        """Freeze PTY geometry and remember the current terminal viewport."""
+        self.flush_pending_output()
+        scrollbar = self.verticalScrollBar()
+        self._saved_view_state = (
+            scrollbar.value(),
+            scrollbar.value() >= scrollbar.maximum() - 2,
+        )
+        self._resize_suspended = True
+
+    def restore_after_window_minimize(self):
+        """Restore geometry, device cursor, and scroll anchor after minimize."""
+        self._resize_suspended = False
+        QTimer.singleShot(0, self._restore_minimized_view)
+
+    def _restore_minimized_view(self):
+        self._sync_terminal_size_to_viewport()
+        self._position_visual_cursor()
+        state = self._saved_view_state
+        if state is None:
+            return
+
+        previous_scroll, was_at_bottom = state
+
+        def apply_view_state():
+            scrollbar = self.verticalScrollBar()
+            if was_at_bottom:
+                scrollbar.setValue(scrollbar.maximum())
+            else:
+                scrollbar.setValue(min(previous_scroll, scrollbar.maximum()))
+            self.viewport().update()
+
+        apply_view_state()
+        QTimer.singleShot(0, apply_view_state)
+        self._saved_view_state = None
 
     def _resize_screen_preserving_content(self, lines, columns):
         """Resize pyte without losing the cursor line or clipped columns."""
@@ -302,8 +347,11 @@ class TerminalWidget(QPlainTextEdit):
 
     def _render_screen(self):
         scrollbar = self.verticalScrollBar()
-        was_at_bottom = scrollbar.value() >= scrollbar.maximum() - 2
-        previous_scroll = scrollbar.value()
+        if self._resize_suspended and self._saved_view_state is not None:
+            previous_scroll, was_at_bottom = self._saved_view_state
+        else:
+            was_at_bottom = scrollbar.value() >= scrollbar.maximum() - 2
+            previous_scroll = scrollbar.value()
         previous_cursor = self.textCursor()
         previous_selection = self.selected_text()
         selection_start = previous_cursor.selectionStart()

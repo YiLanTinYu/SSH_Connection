@@ -39,12 +39,17 @@ from config.ssh_security import (
 
 
 # ──────────────────────────────────────────────────────────
-# 提示符正则（借鉴 w-sw-ssh，兼容 Cisco/H3C/Huawei/Ruijie/TP-Link）
-# 行末锚定，匹配 >, #, ], $, % 结尾的提示符
+# 提示符必须占据完整末行。不能只判断最后一个字符，否则 CPU 91%
+# 这类正常输出会被误判为终端提示符，导致后续命令输出串行错位。
 # ──────────────────────────────────────────────────────────
 PROMPT_REGEX = re.compile(
-    r'(\r|\n).?[<>\[\]a-zA-Z0-9~@*/\\_\-\(\)]+(>|%|#|\$|\]) *$'
+    r'(?:'
+    r'<[^<>\r\n]+>|'
+    r'\[[^\[\]\r\n]+\]|'
+    r'[A-Za-z0-9][A-Za-z0-9._~@:/()\\-]*[>#$]'
+    r')'
 )
+ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
 
 # IP / MAC 地址正则（用于二层上联口探测）
 RE_IPV4    = re.compile(r'(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])')
@@ -190,6 +195,15 @@ class SSHConnection:
     def _is_cancelled(self) -> bool:
         return bool(self.cancel_event and self.cancel_event.is_set())
 
+    @staticmethod
+    def _has_terminal_prompt(output: str) -> bool:
+        """Return whether the final non-empty line is a complete prompt."""
+        cleaned = ANSI_ESCAPE_RE.sub('', str(output or '')).rstrip()
+        if not cleaned:
+            return False
+        final_line = cleaned.splitlines()[-1].strip()
+        return bool(PROMPT_REGEX.fullmatch(final_line))
+
     def _read_until_prompt(self, timeout: float = 10) -> str:
         """
         读取 shell 输出直到出现命令提示符或超时。
@@ -215,12 +229,7 @@ class SSHConnection:
                         self._shell.send(' ')
                         output = output.replace('---- More ----', '').replace('--More--', '')
 
-                    # 检测提示符（使用 w-sw-ssh 正则）
-                    if PROMPT_REGEX.search(output):
-                        break
-                    # 兼容：简单行末检测
-                    stripped = output.rstrip()
-                    if stripped and stripped[-1] in ('>', '#', ']', '$', '%'):
+                    if self._has_terminal_prompt(output):
                         break
                 else:
                     time.sleep(0.05)

@@ -131,6 +131,16 @@ class SerialConsoleDialog(QDialog):
         self.refresh_ports()
         self._set_connected(False)
 
+    def changeEvent(self, event):
+        if event.type() == QEvent.WindowStateChange and hasattr(
+            self, "terminal"
+        ):
+            if self.isMinimized():
+                self.terminal.suspend_for_window_minimize()
+            else:
+                self.terminal.restore_after_window_minimize()
+        super().changeEvent(event)
+
     def _build_ui(self):
         layout = QVBoxLayout(self)
         profile_row = QHBoxLayout()

@@ -95,7 +95,9 @@ mkdir "%BUILD_SOURCE%"
 mkdir "%BUILD_OUTPUT%"
 
 xcopy /E /I /Y /Q "%PROJECT_DIR%\config" "%BUILD_SOURCE%\config" >nul
+xcopy /E /I /Y /Q "%PROJECT_DIR%\controllers" "%BUILD_SOURCE%\controllers" >nul
 xcopy /E /I /Y /Q "%PROJECT_DIR%\core" "%BUILD_SOURCE%\core" >nul
+xcopy /E /I /Y /Q "%PROJECT_DIR%\services" "%BUILD_SOURCE%\services" >nul
 xcopy /E /I /Y /Q "%PROJECT_DIR%\ui" "%BUILD_SOURCE%\ui" >nul
 xcopy /E /I /Y /Q "%PROJECT_DIR%\utils" "%BUILD_SOURCE%\utils" >nul
 xcopy /E /I /Y /Q "%PROJECT_DIR%\assets" "%BUILD_SOURCE%\assets" >nul
@@ -105,11 +107,22 @@ copy /Y "%PROJECT_DIR%\SSH_command.txt" "%BUILD_SOURCE%\SSH_command.txt" >nul
 copy /Y "%PROJECT_DIR%\device_template.xlsx" "%BUILD_SOURCE%\device_template.xlsx" >nul
 copy /Y "%PROJECT_DIR%\app.ico" "%BUILD_SOURCE%\app.ico" >nul
 copy /Y "%PROJECT_DIR%\THIRD_PARTY_NOTICES.md" "%BUILD_SOURCE%\THIRD_PARTY_NOTICES.md" >nul
+copy /Y "%PROJECT_DIR%\USER_GUIDE.md" "%BUILD_SOURCE%\USER_GUIDE.md" >nul
 
 if not exist "%BUILD_SOURCE%\main.py" (
     echo [ERROR] Source staging failed.
     pause
     exit /b 1
+)
+
+pushd "%BUILD_SOURCE%"
+"%PYTHON_EXE%" -c "import ui.main_window"
+set "STAGING_IMPORT_EXIT=!ERRORLEVEL!"
+popd
+if not "!STAGING_IMPORT_EXIT!"=="0" (
+    echo [ERROR] Staged source import check failed. A project module may be missing.
+    pause
+    exit /b !STAGING_IMPORT_EXIT!
 )
 
 set "ICON_ARGS=--windows-icon-from-ico=app.ico"
@@ -156,6 +169,7 @@ cd /d "%BUILD_SOURCE%"
     --include-package=pyftpdlib ^
     --include-package=partftpy ^
     --include-package=ntc_templates ^
+    --include-module=telnetlib_compat ^
     --include-package-data=ntc_templates ^
     --windows-console-mode=%CONSOLE_MODE% ^
     --nofollow-import-to=tests ^
@@ -171,6 +185,7 @@ cd /d "%BUILD_SOURCE%"
     --include-data-dir=assets/open_source=assets/open_source ^
     --include-data-dir=assets/icons=assets/icons ^
     --include-data-files=THIRD_PARTY_NOTICES.md=THIRD_PARTY_NOTICES.md ^
+    --include-data-files=USER_GUIDE.md=USER_GUIDE.md ^
     --output-dir="%BUILD_OUTPUT%" ^
     --output-filename=H3C_SSH_Tool.exe ^
     main.py

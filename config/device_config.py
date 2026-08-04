@@ -19,6 +19,26 @@ from utils.ipv6_utils import IPv6Utils, IPVersion, IPv6AddressValidator
 from utils.password_crypto import decrypt_password, encrypt_password, is_encrypted_password
 
 
+SUPPORTED_DEVICE_BRANDS = ("h3c", "huawei")
+
+
+def normalize_supported_brand(brand: str, default: str = "h3c") -> str:
+    """Normalize user-facing brands and reject brands without verified support."""
+    value = str(brand or default).strip().lower()
+    aliases = {
+        "h3c": "h3c",
+        "comware": "h3c",
+        "huawei": "huawei",
+        "vrp": "huawei",
+    }
+    normalized = aliases.get(value)
+    if normalized:
+        return normalized
+    raise ValueError(
+        "unsupported brand; currently supported brands are H3C and Huawei"
+    )
+
+
 class DeviceInfo:
     """设备信息类（支持IPv4和IPv6）"""
     
@@ -184,6 +204,7 @@ class DeviceConfigManager:
                           username: str = '', password: str = '', name: str = '',
                           **kwargs):
         """手动添加设备"""
+        brand = normalize_supported_brand(brand)
         device = DeviceInfo(brand, ip, port, username, password, name, **kwargs)
         self.add_device(device)
     
@@ -216,7 +237,9 @@ class DeviceConfigManager:
         if not isinstance(data, dict):
             raise ValueError('device item must be an object')
 
-        brand = cls._clean_excel_value(data.get('brand'), 'h3c').lower()
+        brand = normalize_supported_brand(
+            cls._clean_excel_value(data.get('brand'), 'h3c')
+        )
         ip = cls._clean_excel_value(data.get('ip'))
         port = cls._clean_excel_port(data.get('port'), 22)
         username = cls._clean_excel_value(data.get('username'))
@@ -353,7 +376,9 @@ class DeviceConfigManager:
                     for name, column in header_index.items()
                 }
                 try:
-                    brand = self._clean_excel_value(row.get('brand'), 'h3c').lower()
+                    brand = normalize_supported_brand(
+                        self._clean_excel_value(row.get('brand'), 'h3c')
+                    )
                     ip = self._clean_excel_value(row.get('ip'))
                     port = self._clean_excel_port(row.get('port'), 22)
                     username = self._clean_excel_value(row.get('username'))

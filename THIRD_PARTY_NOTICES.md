@@ -42,6 +42,16 @@ AOMT includes selected unmodified SVG icons for its collapsible workspace
 navigation under `assets/icons/phosphor/`. The complete MIT license is stored
 alongside those assets.
 
+## Lucide Icons
+
+- Project: `lucide-icons/lucide`
+- Source: https://github.com/lucide-icons/lucide
+- License: ISC, with selected Feather-derived icons under MIT
+
+AOMT includes selected unmodified SVG icons for primary window actions under
+`assets/icons/lucide/`. The complete upstream license notice is stored
+alongside those assets.
+
 ## NAPALM Huawei VRP
 
 - Project: `napalm-automation-community/napalm-huawei-vrp`

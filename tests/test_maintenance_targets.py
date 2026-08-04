@@ -6,14 +6,15 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QMessageBox
 
+from config.device_config import DeviceConfigManager, DeviceInfo
 from ui.maintenance_target_dialog import (
     MaintenanceTargetDialog,
     expand_ping_networks,
     parse_manual_targets,
 )
-from ui.main_window import PingWorker
+from ui.main_window import MainWindow, PingWorker
 
 
 def test_parse_manual_targets_supports_ipv4_ipv6_hostname_and_deduplication():
@@ -81,6 +82,120 @@ def test_ping_dialog_merges_imported_manual_and_network_targets():
         app.processEvents()
     finally:
         dialog.close()
+
+
+def test_shared_target_dialog_marks_temporary_and_ping_only_targets():
+    app = QApplication.instance() or QApplication([])
+    dialog = MaintenanceTargetDialog("shared_targets", [])
+    try:
+        dialog.manual_input.setPlainText("192.0.2.10")
+        dialog.network_input.setPlainText("192.0.2.0/30")
+
+        devices = dialog.selected_devices()
+
+        assert [device.ip for device in devices] == [
+            "192.0.2.10",
+            "192.0.2.1",
+            "192.0.2.2",
+        ]
+        assert all(
+            getattr(device, "_aomt_temporary", False)
+            for device in devices
+        )
+        assert not getattr(devices[0], "_aomt_ping_only", False)
+        assert all(
+            getattr(device, "_aomt_ping_only", False)
+            for device in devices[1:]
+        )
+        app.processEvents()
+    finally:
+        dialog.close()
+
+
+def test_shared_target_dialog_requires_complete_optional_credentials():
+    app = QApplication.instance() or QApplication([])
+    dialog = MaintenanceTargetDialog("shared_targets", [])
+    try:
+        dialog.manual_input.setPlainText("192.0.2.10")
+        dialog.username_input.setText("operator")
+
+        with pytest.raises(ValueError, match="必须同时填写"):
+            dialog.selected_devices()
+    finally:
+        dialog.close()
+
+
+def test_shared_target_dialog_can_remove_selected_temporary_target(
+    monkeypatch,
+):
+    app = QApplication.instance() or QApplication([])
+    temporary = DeviceInfo(
+        brand="",
+        ip="192.0.2.10",
+        port=22,
+        username="operator",
+        password="secret",
+        name="192.0.2.10",
+    )
+    temporary._aomt_temporary = True
+    dialog = MaintenanceTargetDialog("shared_targets", [temporary])
+    try:
+        dialog.device_list.item(0).setSelected(True)
+        monkeypatch.setattr(
+            QMessageBox,
+            "question",
+            lambda *args, **kwargs: QMessageBox.Yes,
+        )
+
+        dialog.remove_selected_temporary_targets()
+
+        assert dialog.device_list.count() == 0
+        assert dialog.removed_temporary_targets() == [temporary]
+        dialog._validate_and_accept()
+        assert dialog.result() == dialog.Accepted
+        app.processEvents()
+    finally:
+        dialog.close()
+
+
+def test_temporary_targets_sync_with_main_device_manager():
+    manager = DeviceConfigManager()
+    owner = SimpleNamespace(
+        device_manager=manager,
+        _custom_task_targets=[],
+    )
+    temporary = DeviceInfo(
+        brand="",
+        ip="192.0.2.20",
+        port=2222,
+        username="operator",
+        password="secret",
+        name="192.0.2.20",
+    )
+    temporary._aomt_temporary = True
+
+    synchronized = MainWindow._sync_temporary_task_devices(
+        owner,
+        [temporary],
+    )
+    owner._custom_task_targets = synchronized
+
+    assert manager.get_devices() == [temporary]
+    assert MainWindow._valid_custom_task_targets(owner) == [temporary]
+
+    manager.remove_device(0)
+
+    assert MainWindow._valid_custom_task_targets(owner) == []
+
+    manager.add_device(temporary)
+    synchronized = MainWindow._sync_temporary_task_devices(
+        owner,
+        [],
+        [temporary],
+    )
+
+    assert synchronized == []
+    assert manager.get_devices() == []
 
 
 def test_ping_worker_reports_concurrent_results(monkeypatch):
