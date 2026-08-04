@@ -168,25 +168,6 @@ AOMT_ENC_V1$
 - 应用图标、版本和作者显示
 - Nuitka 打包脚本
 
-测试数据：
-
-```text
-test_data/五台交换机同名脚本测试设备.xlsx
-test_data/per_device_scripts/
-```
-
-预期匹配：
-
-```text
-SW10 -> SW10.txt
-SW20 -> SW20.txt
-SW30 -> SW30.txt
-SW40 -> SW40.txt
-SW50 -> SW50.txt
-```
-
-测试表使用虚拟账号密码，没有对应 SSH 服务时连接失败属于正常现象。
-
 ## 4. 运行环境
 
 推荐：
@@ -479,8 +460,7 @@ docs/ui_mockups/
 preview_themes.py
 ```
 
-`test_data/` 只保留虚拟账号和只读命令示例；不得放入真实设备配置、
-密码、密码哈希或加密凭据文件。
+`test_data/` 仅供本地验证并整体忽略，不得提交到 Git。
 
 ## 9. 安全与维护注意事项
 
