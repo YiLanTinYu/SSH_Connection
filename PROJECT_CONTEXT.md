@@ -456,7 +456,6 @@ pytest -q
 
 ```text
 srbuild/
-docs/ui_mockups/
 preview_themes.py
 ```
 

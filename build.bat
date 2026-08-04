@@ -173,7 +173,6 @@ cd /d "%BUILD_SOURCE%"
     --include-package-data=ntc_templates ^
     --windows-console-mode=%CONSOLE_MODE% ^
     --nofollow-import-to=tests ^
-    --nofollow-import-to=Kylin ^
     --nofollow-import-to=matplotlib ^
     --nofollow-import-to=pytest ^
     --nofollow-import-to=pandas ^
